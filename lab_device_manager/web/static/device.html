@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>设备详情</title>
+<style>
+ body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
+ header{
+   padding:10px 20px;
+   border-bottom:1px solid rgba(255,255,255,0.08);
+   background:linear-gradient(180deg, rgba(26,29,36,0.98) 0%, rgba(15,17,21,0.98) 100%);
+   backdrop-filter:blur(12px);
+   display:flex;align-items:center;justify-content:space-between;
+   position:sticky;top:0;z-index:100;
+   box-shadow:0 4px 20px rgba(0,0,0,0.25);
+ }
+ .brand{display:flex;align-items:center;gap:14px}
+ .logo{height:46px;max-width:150px;width:auto;border-radius:6px;background:transparent;padding:0;box-shadow:0 2px 14px rgba(0,0,0,0.25);object-fit:contain}
+ .brand-text{display:flex;flex-direction:column;gap:2px}
+ .brand-title{font-size:18px;font-weight:600;color:#f0f2f5;letter-spacing:0.5px}
+ .brand-sub{font-size:10px;color:#8a93a3;letter-spacing:1.2px;text-transform:uppercase}
+ header a{color:#6ea8ff;text-decoration:none;font-size:13px;margin-right:10px;transition:color .15s}
+ header a:hover{color:#9ec5ff}
+ .page-id{display:flex;align-items:center;gap:8px;color:#8a93a3;font-size:13px}
+ h2{margin:18px 16px 10px;font-size:13px;color:#8a93a3;font-weight:500;letter-spacing:0.5px}
+ .wrap{padding:0 16px}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+ .card{background:#1a1d24;border-radius:12px;padding:14px}
+ .card .name{font-size:18px;font-weight:600;margin-bottom:8px}
+ .card .v{font-size:18px;margin-top:4px}.card .k{color:#8a93a3;font-size:12px;margin-top:4px}
+ .kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;font-size:13px}
+ .kv .k{color:#8a93a3}.kv .val{color:#e6e6e6}
+ .s-running{color:#3ddc84}.s-alarm{color:#ff5c5c}.s-offline{color:#888}.s-paused{color:#f5c518}.s-stopped{color:#cfd3da}
+ table{width:calc(100% - 32px);margin:0 16px;border-collapse:collapse;font-size:13px}
+ th,td{padding:6px 8px;text-align:left;border-bottom:1px solid #222;white-space:nowrap}
+ th{color:#8a93a3;font-weight:normal}
+ .empty{padding:0 16px;color:#8a93a3;font-size:13px}
+</style></head>
+<body>
+<header>
+  <div class="brand">
+    <img src="/static/logo.png" alt="Puricore" class="logo">
+    <div class="brand-text">
+      <div class="brand-title"><a href="/">← 返回</a>设备详情</div>
+      <div class="brand-sub">PURiCORE · Ceramic Membrane Technology</div>
+    </div>
+  </div>
+  <div class="page-id"><span id="title">设备</span></div>
+</header>
+<h2>实时状态</h2>
+<div class="wrap"><div id="status" class="grid"></div></div>
+<h2>工艺配置</h2>
+<div class="wrap"><div id="config" class="grid"></div></div>
+<h2>累计寿命</h2>
+<div class="wrap"><div id="lifetime" class="grid"></div></div>
+<h2>该设备运行记录（最近 20）</h2>
+<table id="runs"><thead><tr><th>开始</th><th>结束</th><th>时长</th><th>状态</th><th>本次液量</th><th>累计液量</th><th>操作人</th><th>项目</th></tr></thead><tbody></tbody></table>
+<div id="empty" class="empty" style="display:none">暂无运行记录</div>
+<script src="/static/device.js"></script>
+</body></html>

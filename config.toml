@@ -1,0 +1,89 @@
+db_path            = "./data/lab_device_manager.db"
+sample_interval_ms = 1000
+web_port           = 7800
+auto_open_browser  = true
+# secret_key is auto-generated in data/.session_secret if omitted.
+# login_password 为空字符串时关闭登录；设置为非空字符串后启用密码保护。
+# login_password     = "your-strong-password"
+
+[[devices]]
+name        = "pump-1"
+type        = "tyd02"
+alias       = "注射泵"
+serial_port = "/dev/cu.usbserial-BG039GXP"
+baudrate    = 9600
+parity      = "EVEN"        # 8E1
+modbus_addr = 1
+wordorder   = "CDAB"
+
+# ── 粘度计（方瑞，RS232，自定义二进制协议）──
+# RS232 转换器到货接上后，把 serial_port 改成实际端口，并用 scripts/viscometer_capture.py
+# 抓帧确认校验和/扭矩换算/帧类型（见 docs/.../项目记忆 project_viscometer）。
+[[devices]]
+name        = "viscometer-1"
+type        = "viscometer"
+alias       = "粘度计"
+serial_port = "/dev/cu.usbserial-VISCO"   # 占位 —— 实际接上后替换
+baudrate    = 9600
+parity      = "NONE"        # 8N1（粘度计假设）
+
+# ── 搅拌器（HMS-C，RS485）×5 ──
+# 串口参数(波特/校验/地址)未知 —— 接上后用 scripts/stirrer_probe.py 探测，再回填。
+# ⚠️ 多机总线：若 5 台并到同一条 RS485（一个转换器、不同 modbus_addr），当前 Engine
+#    「每设备独占一个串口」的模型不支持（会重复打开同一端口）。部署时要么每台走串口服务器
+#    独立一口（当前模型可用），要么等 Engine 加「一条总线多从机」支持。占位端口如下，皆待替换。
+[[devices]]
+name        = "stirrer-1"
+type        = "stirrer"
+alias       = "搅拌器1"
+serial_port = "/dev/cu.usbserial-STIR1"   # 占位
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 1
+
+[[devices]]
+name        = "stirrer-2"
+type        = "stirrer"
+alias       = "搅拌器2"
+serial_port = "/dev/cu.usbserial-STIR2"
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 2
+
+[[devices]]
+name        = "stirrer-3"
+type        = "stirrer"
+alias       = "搅拌器3"
+serial_port = "/dev/cu.usbserial-STIR3"
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 3
+
+[[devices]]
+name        = "stirrer-4"
+type        = "stirrer"
+alias       = "搅拌器4"
+serial_port = "/dev/cu.usbserial-STIR4"
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 4
+
+[[devices]]
+name        = "stirrer-5"
+type        = "stirrer"
+alias       = "搅拌器5"
+serial_port = "/dev/cu.usbserial-STIR5"
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 5
+
+# ── 温湿度控制器（WHD46-33，RS485 Modbus RTU）──
+# 支持3路温湿度采集，串口参数：9600, NONE, 8N1
+[[devices]]
+name        = "sensor-1"
+type        = "whd46"
+alias       = "温湿度控制器"
+serial_port = "/dev/cu.usbserial-WHD46"   # Windows上改为 COM5 等实际端口
+baudrate    = 9600
+parity      = "NONE"
+modbus_addr = 1

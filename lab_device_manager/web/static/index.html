@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>设备采集管理台</title>
+<style>
+ body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
+ header{
+   padding:10px 20px;
+   border-bottom:1px solid rgba(255,255,255,0.08);
+   background:linear-gradient(180deg, rgba(26,29,36,0.98) 0%, rgba(15,17,21,0.98) 100%);
+   backdrop-filter:blur(12px);
+   display:flex;align-items:center;justify-content:space-between;
+   position:sticky;top:0;z-index:100;
+   box-shadow:0 4px 20px rgba(0,0,0,0.25);
+ }
+ .brand{display:flex;align-items:center;gap:14px}
+ .logo{height:46px;max-width:150px;width:auto;border-radius:6px;background:transparent;padding:0;box-shadow:0 2px 14px rgba(0,0,0,0.25);object-fit:contain}
+ .brand-text{display:flex;flex-direction:column;gap:2px}
+ .brand-title{font-size:18px;font-weight:600;color:#f0f2f5;letter-spacing:0.5px}
+ .brand-sub{font-size:10px;color:#8a93a3;letter-spacing:1.2px;text-transform:uppercase}
+ .env-badge{
+   font-size:11px;color:#6ea8ff;border:1px solid rgba(110,168,255,0.35);
+   padding:3px 10px;border-radius:20px;background:rgba(110,168,255,0.08);
+   letter-spacing:0.5px;
+ }
+ h2{margin:18px 16px 10px;font-size:13px;color:#8a93a3;font-weight:500;letter-spacing:0.5px}
+ .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;padding:0 16px}
+ .card{background:#1a1d24;border-radius:12px;padding:14px;cursor:pointer;transition:background .15s, transform .12s}
+ .card:hover{background:#21252e;transform:translateY(-1px)}
+ .card .name{font-size:16px;font-weight:600;margin-bottom:8px}
+ .card.sensor-card{border-left:4px solid #3498DB}
+ .card.sensor-card .name{color:#3498DB}
+ .card .v{font-size:18px;margin-top:4px}.card .k{color:#8a93a3;font-size:12px;margin-top:4px}
+ .card .cfg{color:#6ea8ff;font-size:12px;margin-top:6px}
+ .s-running{color:#3ddc84}.s-alarm{color:#ff5c5c}.s-offline{color:#888}.s-paused{color:#f5c518}.s-stopped{color:#cfd3da}
+ table{width:calc(100% - 32px);margin:0 16px;border-collapse:collapse;font-size:13px}
+ th,td{padding:6px 8px;text-align:left;border-bottom:1px solid #222;white-space:nowrap}
+ th{color:#8a93a3;font-weight:normal}
+ button{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:4px 10px;cursor:pointer;transition:background .15s}
+ button:hover{background:#2f3540}
+ input,select{background:#1a1d24;border:1px solid #333;color:#e6e6e6;border-radius:6px;padding:5px 10px;outline:none}
+ input:focus,select:focus{border-color:#4a5568}
+</style><!-- cache_bust=1783485148 --></head>
+<body>
+<header>
+  <div class="brand">
+    <img src="/static/logo.png" alt="Puricore" class="logo">
+    <div class="brand-text">
+      <div class="brand-title">设备采集管理台</div>
+      <div class="brand-sub">PURiCORE · Ceramic Membrane Technology</div>
+    </div>
+  </div>
+  <div class="env-badge">本地实验室</div>
+</header>
+<h2>实时状态</h2>
+<div id="devices" class="cards"></div>
+<h2>运行记录（最近 30）</h2>
+<div style="padding:0 16px 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <input id="fProject" placeholder="项目">
+  <input id="fOperator" placeholder="操作人">
+  <select id="fStatus">
+    <option value="">全部状态</option>
+    <option value="completed">completed</option>
+    <option value="alarm_abort">alarm_abort</option>
+    <option value="manual_abort">manual_abort</option>
+  </select>
+  <button onclick="loadRuns()">筛选</button>
+  <button onclick="window.location='/api/runs/export.csv'">导出CSV</button>
+  <button onclick="exportExcel()">导出Excel</button>
+</div>
+<table id="runs"><thead><tr><th>开始</th><th>结束</th><th>设备</th><th>时长</th><th>状态</th><th>累计液量</th><th>操作人</th><th>项目</th><th></th></tr></thead><tbody></tbody></table>
+<script src="/static/app.js"></script>
+</body></html>

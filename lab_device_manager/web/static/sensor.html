@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>温湿度控制器 - 设备采集管理台</title>
+<style>
+body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
+header{padding:10px 20px;border-bottom:1px solid rgba(255,255,255,0.08);background:linear-gradient(180deg,rgba(26,29,36,0.98) 0%,rgba(15,17,21,0.98) 100%);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 4px 20px rgba(0,0,0,0.25)}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{height:40px;max-width:120px;width:auto;border-radius:6px;background:transparent;padding:0;box-shadow:0 2px 14px rgba(0,0,0,0.25);object-fit:contain}
+.brand-title{font-size:16px;font-weight:600;color:#f0f2f5;letter-spacing:0.5px}
+.env-badge{font-size:11px;color:#6ea8ff;border:1px solid rgba(110,168,255,0.35);padding:3px 10px;border-radius:20px;background:rgba(110,168,255,0.08);letter-spacing:0.5px}
+.s-running{color:#3ddc84}.s-alarm{color:#ff5c5c}.s-offline{color:#888}.s-paused{color:#f5c518}
+.container{padding:16px;max-width:1200px;margin:0 auto}
+.device-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.device-header h1{margin:0;font-size:20px;color:#f0f2f5}
+.device-header .status{font-size:14px;padding:4px 12px;border-radius:20px;font-weight:500}
+
+.conn-bar{background:#1a1d24;border-radius:12px;padding:12px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.conn-bar label{font-size:13px;color:#8a93a3}
+.conn-bar select{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:13px;min-width:200px}
+.conn-bar input[type="text"]{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:13px;width:250px}
+.conn-bar button{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 16px;cursor:pointer;transition:background .15s;font-size:13px}
+.conn-bar button:hover{background:#2f3540}
+.conn-bar button:active{background:#1a1d24}
+.conn-bar .conn-status{font-size:13px;padding:4px 12px;border-radius:20px}
+.conn-bar .sep{width:1px;height:24px;background:#333}
+
+.channels{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px}
+.channel-card{background:#1a1d24;border-radius:12px;padding:16px;border-left:4px solid}
+.channel-card.ch1{border-color:#E74C3C}
+.channel-card.ch2{border-color:#2ECC71}
+.channel-card.ch3{border-color:#3498DB}
+.channel-card .name{font-size:14px;color:#8a93a3;margin-bottom:8px}
+.channel-card .temp{font-size:36px;font-weight:600;margin-bottom:4px}
+.channel-card .humid{font-size:16px;color:#8a93a3}
+
+.summary{background:#1a1d24;border-radius:12px;padding:12px;margin-bottom:12px;display:flex;gap:20px;flex-wrap:wrap}
+.summary-item{display:flex;align-items:center;gap:8px}
+.summary-item .label{color:#8a93a3;font-size:13px}
+.summary-item .value{font-size:16px;font-weight:500}
+
+.controls{background:#1a1d24;border-radius:12px;padding:12px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.controls button{border-radius:6px;padding:8px 20px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s;border:1px solid}
+.controls button:disabled{opacity:0.5;cursor:not-allowed}
+.controls .btn-start{background:#3ddc84;color:#0f1115;border-color:#3ddc84}
+.controls .btn-start:hover:not(:disabled){background:#2ed476}
+.controls .btn-stop{background:#ff5c5c;color:#fff;border-color:#ff5c5c}
+.controls .btn-stop:hover:not(:disabled){background:#ee4c4c}
+.controls .btn-export{background:#3498DB;color:#fff;border-color:#3498DB}
+.controls .btn-export:hover{background:#2980B9}
+.controls .sep{width:1px;height:28px;background:#333}
+.controls .interval{display:flex;align-items:center;gap:8px}
+.controls .interval label{color:#8a93a3;font-size:13px}
+.controls .interval input{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:13px;width:60px;text-align:center}
+
+.chart-section{background:#1a1d24;border-radius:12px;padding:12px;margin-bottom:12px}
+.chart-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.chart-header button{background:#262b34;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:6px 16px;cursor:pointer;transition:background .15s;font-size:13px}
+.chart-header button.active{background:#3498DB;border-color:#3498DB;color:#fff}
+.chart-header button:hover{background:#2f3540}
+.chart-header button.active:hover{background:#2980B9}
+.chart-container{height:350px;position:relative}
+canvas{width:100%;height:100%}
+
+.history-table{background:#1a1d24;border-radius:12px;overflow:hidden;max-height:300px;display:flex;flex-direction:column}
+.history-table table{width:100%;border-collapse:collapse;font-size:13px;flex:1;display:block;overflow-y:auto}
+.history-table thead{position:sticky;top:0;z-index:1}
+.history-table th,.history-table td{padding:8px 12px;text-align:left;border-bottom:1px solid #222;white-space:nowrap}
+.history-table th{color:#8a93a3;font-weight:normal;background:#22252e}
+.history-table .empty{text-align:center;color:#666;padding:20px}
+
+.back-link{color:#6ea8ff;text-decoration:none;font-size:13px;margin-bottom:16px;display:inline-flex;align-items:center;gap:4px}
+.back-link:hover{text-decoration:underline}
+
+.status-bar{background:#1a1d24;border-radius:8px;padding:8px 12px;font-size:12px;color:#8a93a3;margin-top:12px}
+</style></head>
+<body>
+<header>
+  <div class="brand">
+    <img src="/static/logo.png" alt="Puricore" class="logo">
+    <div>
+      <div class="brand-title">设备采集管理台</div>
+    </div>
+  </div>
+  <div class="env-badge">本地实验室</div>
+</header>
+<div class="container">
+  <a href="/" class="back-link">← 返回首页</a>
+  
+  <div class="device-header">
+    <h1 id="device-name">温湿度控制器</h1>
+    <span id="device-status" class="status s-offline">offline</span>
+  </div>
+
+  <div class="conn-bar">
+    <label>COM口：</label>
+    <select id="com-select">
+      <option value="auto">自动探测</option>
+    </select>
+    <button id="btn-refresh-ports">刷新</button>
+    <button id="btn-connect">连接设备</button>
+    <span id="conn-status" class="conn-status s-offline">未连接</span>
+    <div class="sep"></div>
+    <label>CSV路径：</label>
+    <input type="text" id="csv-path" value="data" readonly>
+    <button id="btn-browse-path">浏览</button>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start" class="btn-start">▶ 开始采集</button>
+    <button id="btn-stop" class="btn-stop" disabled>■ 停止采集</button>
+    <div class="sep"></div>
+    <div class="interval">
+      <label>间隔：</label>
+      <input type="number" id="interval-input" value="60" min="1" max="3600">
+      <label>秒</label>
+    </div>
+    <div class="sep"></div>
+    <button id="btn-export" class="btn-export">导出数据</button>
+  </div>
+
+  <div class="summary">
+    <div class="summary-item">
+      <span class="label">平均温度</span>
+      <span class="value" id="avg-temp">--.- ℃</span>
+    </div>
+    <div class="summary-item">
+      <span class="label">平均湿度</span>
+      <span class="value" id="avg-humid">--.- %RH</span>
+    </div>
+    <div class="summary-item">
+      <span class="label">更新时间</span>
+      <span class="value" id="update-time">--</span>
+    </div>
+  </div>
+
+  <div class="channels" id="channels-container">
+    <div class="channel-card ch1">
+      <div class="name">CH1</div>
+      <div class="temp" id="ch1-temp">--.- ℃</div>
+      <div class="humid" id="ch1-humid">--.- %RH</div>
+    </div>
+    <div class="channel-card ch2">
+      <div class="name">CH2</div>
+      <div class="temp" id="ch2-temp">--.- ℃</div>
+      <div class="humid" id="ch2-humid">--.- %RH</div>
+    </div>
+    <div class="channel-card ch3">
+      <div class="name">CH3</div>
+      <div class="temp" id="ch3-temp">--.- ℃</div>
+      <div class="humid" id="ch3-humid">--.- %RH</div>
+    </div>
+  </div>
+
+  <div class="chart-section">
+    <div class="chart-header">
+      <button id="btn-temp" class="active">温度 (℃)</button>
+      <button id="btn-humid">湿度 (%RH)</button>
+    </div>
+    <div class="chart-container">
+      <canvas id="sensor-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="history-table">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>CH1 温度</th><th>CH1 湿度</th><th>CH2 温度</th><th>CH2 湿度</th><th>CH3 温度</th><th>CH3 湿度</th></tr>
+      </thead>
+      <tbody id="history-body">
+        <tr><td colspan="7" class="empty">暂无历史数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="status-bar" id="status-bar">就绪</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const deviceId = parseInt(window.location.pathname.split('/').pop());
+const CH_COLORS = ['#E74C3C', '#2ECC71', '#3498DB'];
+const CH_LABELS = ['CH1', 'CH2', 'CH3'];
+
+let chart = null;
+let currentMode = 'temperature';
+let historyData = [];
+let maxPoints = 60;
+let isAcquiring = false;
+let pollInterval = null;
+
+function fmtTs(ms) {
+  return ms == null ? '-' : new Date(ms).toLocaleString();
+}
+
+function fmtNum(v, decimals = 1) {
+  return v == null ? '--.-' : v.toFixed(decimals);
+}
+
+function setStatus(text) {
+  document.getElementById('status-bar').textContent = text;
+}
+
+function initChart() {
+  const ctx = document.getElementById('sensor-chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: CH_LABELS.map((label, i) => ({
+        label: label,
+        data: [],
+        borderColor: CH_COLORS[i],
+        backgroundColor: CH_COLORS[i] + '20',
+        borderWidth: 2,
+        tension: 0.3,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      }))
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        intersect: false,
+        mode: 'index',
+      },
+      plugins: {
+        legend: {
+          labels: { color: '#8a93a3', font: { size: 12 } },
+          position: 'top',
+        },
+        tooltip: {
+          backgroundColor: 'rgba(26,29,36,0.95)',
+          titleColor: '#f0f2f5',
+          bodyColor: '#e6e6e6',
+          borderColor: '#333',
+          borderWidth: 1,
+          padding: 12,
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          ticks: { color: '#8a93a3', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          ticks: { color: '#8a93a3', font: { size: 11 } },
+        }
+      }
+    }
+  });
+}
+
+function updateChartData(data) {
+  if (!chart) return;
+  const labels = [];
+  const datasets = CH_LABELS.map((_, i) => []);
+  
+  data.forEach(item => {
+    labels.push(fmtTs(item.ts_ms));
+    const channels = item.channels || [];
+    CH_LABELS.forEach((_, i) => {
+      const ch = channels.find(c => c.channel === i + 1);
+      if (currentMode === 'temperature') {
+        datasets[i].push(ch ? ch.temp_c : null);
+      } else {
+        datasets[i].push(ch ? ch.humid_rh : null);
+      }
+    });
+  });
+  
+  chart.data.labels = labels;
+  chart.data.datasets.forEach((ds, i) => { ds.data = datasets[i]; });
+  
+  const yLabel = currentMode === 'temperature' ? '温度 (℃)' : '湿度 (%RH)';
+  chart.options.scales.y.title = { display: true, text: yLabel, color: '#8a93a3' };
+  
+  chart.update('none');
+}
+
+async function refreshPorts() {
+  try {
+    const resp = await fetch('/api/serial-ports');
+    const data = await resp.json();
+    const select = document.getElementById('com-select');
+    select.innerHTML = '<option value="auto">自动探测</option>';
+    data.ports.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.device;
+      opt.textContent = `${p.device} - ${p.desc}`;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('Failed to refresh ports:', e);
+  }
+}
+
+async function connectDevice() {
+  const btn = document.getElementById('btn-connect');
+  const status = document.getElementById('conn-status');
+  
+  if (btn.textContent === '连接中...') return;
+  
+  btn.textContent = '连接中...';
+  btn.disabled = true;
+  status.textContent = '连接中...';
+  status.className = 'conn-status';
+  
+  const port = document.getElementById('com-select').value;
+  
+  try {
+    const resp = await fetch(`/api/devices/${deviceId}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port: port })
+    });
+    const data = await resp.json();
+    
+    if (data.ok) {
+      status.textContent = `已连接 ${data.port}`;
+      status.className = 'conn-status s-running';
+      setStatus(`已连接 | ${data.port} @ 9600 baud`);
+      loadSensorData();
+      loadHistory();
+      startAcquisition();
+    } else {
+      alert(data.error + '\n\n' + data.detail);
+      status.textContent = '未连接';
+      status.className = 'conn-status s-offline';
+      setStatus('连接失败');
+    }
+  } catch (e) {
+    alert('连接失败: ' + e.message);
+    status.textContent = '未连接';
+    status.className = 'conn-status s-offline';
+    setStatus('连接失败');
+  } finally {
+    btn.textContent = '连接设备';
+    btn.disabled = false;
+  }
+}
+
+async function disconnectDevice() {
+  try {
+    await fetch(`/api/devices/${deviceId}/disconnect`, { method: 'POST' });
+    document.getElementById('conn-status').textContent = '未连接';
+    document.getElementById('conn-status').className = 'conn-status s-offline';
+    setStatus('已断开连接');
+    stopAcquisition();
+  } catch (e) {
+    console.error('Failed to disconnect:', e);
+  }
+}
+
+async function loadSensorData() {
+  try {
+    let resp, data;
+    
+    const connStatus = document.getElementById('conn-status');
+    if (connStatus.textContent.includes('已连接')) {
+      resp = await fetch(`/api/devices/${deviceId}/realtime-data`);
+    } else {
+      resp = await fetch(`/api/devices/${deviceId}/sensor-data`);
+    }
+    data = await resp.json();
+    
+    document.getElementById('device-name').textContent = data.device_alias || data.device_name || '温湿度控制器';
+    
+    const statusEl = document.getElementById('device-status');
+    statusEl.textContent = data.state || 'offline';
+    statusEl.className = `status s-${data.state || 'offline'}`;
+    
+    if (data.state === 'running') {
+      connStatus.textContent = '已连接';
+      connStatus.className = 'conn-status s-running';
+    }
+    
+    if (data.channels && data.channels.length > 0) {
+      const avgTemp = data.channels.reduce((sum, ch) => sum + (ch.temp_c || 0), 0) / data.channels.length;
+      const avgHumid = data.channels.reduce((sum, ch) => sum + (ch.humid_rh || 0), 0) / data.channels.length;
+      
+      document.getElementById('avg-temp').textContent = avgTemp != null 
+        ? `${avgTemp.toFixed(1)} ℃` : '--.- ℃';
+      document.getElementById('avg-humid').textContent = avgHumid != null
+        ? `${avgHumid.toFixed(1)} %RH` : '--.- %RH';
+      
+      document.getElementById('update-time').textContent = fmtTs(Date.now());
+      
+      data.channels.forEach(ch => {
+        document.getElementById(`ch${ch.channel}-temp`).textContent = ch.temp_c != null
+          ? `${ch.temp_c.toFixed(1)} ℃` : '--.- ℃';
+        document.getElementById(`ch${ch.channel}-humid`).textContent = ch.humid_rh != null
+          ? `${ch.humid_rh.toFixed(1)} %RH` : '--.- %RH';
+      });
+      
+      const newPoint = {
+        ts_ms: Date.now(),
+        state: data.state,
+        channels: data.channels.map(ch => ({
+          channel: ch.channel,
+          temp_c: ch.temp_c,
+          humid_rh: ch.humid_rh,
+        }))
+      };
+      
+      lastDataPoint = newPoint;
+      historyData.push(newPoint);
+      if (historyData.length > maxPoints) historyData.shift();
+      updateChartData(historyData);
+      
+      if (isAcquiring) {
+        const csvPath = document.getElementById('csv-path').value || 'data';
+        fetch(`/api/devices/${deviceId}/log-csv`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            save_path: csvPath,
+            data: newPoint
+          })
+        }).catch(e => console.error('Failed to log CSV:', e));
+      }
+    } else {
+      document.getElementById('avg-temp').textContent = '--.- ℃';
+      document.getElementById('avg-humid').textContent = '--.- %RH';
+      document.getElementById('update-time').textContent = '--:--:--';
+      [1, 2, 3].forEach(ch => {
+        document.getElementById(`ch${ch}-temp`).textContent = '--.- ℃';
+        document.getElementById(`ch${ch}-humid`).textContent = '--.- %RH';
+      });
+    }
+  } catch (e) {
+    console.error('Failed to load sensor data:', e);
+  }
+}
+
+async function loadHistory() {
+  try {
+    const resp = await fetch(`/api/devices/${deviceId}/sensor-history?limit=50`);
+    const data = await resp.json();
+    
+    historyData = (data.history || []).reverse();
+    if (historyData.length > maxPoints) historyData = historyData.slice(-maxPoints);
+    updateChartData(historyData);
+    
+    const tbody = document.getElementById('history-body');
+    if (historyData.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无历史数据</td></tr>';
+      return;
+    }
+    
+    tbody.innerHTML = historyData.map(item => {
+      const channels = item.channels || [];
+      const ch1 = channels.find(c => c.channel === 1) || {};
+      const ch2 = channels.find(c => c.channel === 2) || {};
+      const ch3 = channels.find(c => c.channel === 3) || {};
+      return `<tr>
+        <td>${fmtTs(item.ts_ms)}</td>
+        <td>${fmtNum(ch1.temp_c)}</td>
+        <td>${fmtNum(ch1.humid_rh)}</td>
+        <td>${fmtNum(ch2.temp_c)}</td>
+        <td>${fmtNum(ch2.humid_rh)}</td>
+        <td>${fmtNum(ch3.temp_c)}</td>
+        <td>${fmtNum(ch3.humid_rh)}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load history:', e);
+  }
+}
+
+function startAcquisition() {
+  if (isAcquiring) return;
+  isAcquiring = true;
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  setStatus('采集中');
+  
+  const interval = parseInt(document.getElementById('interval-input').value) || 60;
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(() => {
+    loadSensorData();
+  }, interval * 1000);
+}
+
+let lastDataPoint = null;
+
+function stopAcquisition() {
+  if (!isAcquiring) return;
+  isAcquiring = false;
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+  
+  if (lastDataPoint) {
+    const csvPath = document.getElementById('csv-path').value || 'data';
+    fetch(`/api/devices/${deviceId}/log-csv`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        save_path: csvPath,
+        data: lastDataPoint
+      })
+    }).then(() => {
+      setStatus('已停止');
+      alert('数据已全部保存到CSV');
+    }).catch(e => {
+      console.error('Failed to save final data:', e);
+      setStatus('已停止');
+    });
+  } else {
+    setStatus('已停止');
+  }
+}
+
+async function exportCSV() {
+  const csvPath = document.getElementById('csv-path').value;
+  if (csvPath && csvPath !== 'data') {
+    try {
+      const resp = await fetch(`/api/devices/${deviceId}/export-csv?save_path=${encodeURIComponent(csvPath)}`);
+      const data = await resp.json();
+      if (data.ok) {
+        alert(data.message);
+      } else {
+        alert('导出失败: ' + data.error);
+      }
+    } catch (e) {
+      alert('导出失败: ' + e.message);
+    }
+  } else {
+    window.open(`/api/devices/${deviceId}/export-csv`, '_blank');
+  }
+}
+
+function toggleMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-temp').className = mode === 'temperature' ? 'active' : '';
+  document.getElementById('btn-humid').className = mode === 'humidity' ? 'active' : '';
+  updateChartData(historyData);
+}
+
+document.getElementById('btn-refresh-ports').addEventListener('click', refreshPorts);
+document.getElementById('btn-connect').addEventListener('click', connectDevice);
+document.getElementById('btn-start').addEventListener('click', startAcquisition);
+document.getElementById('btn-stop').addEventListener('click', stopAcquisition);
+document.getElementById('btn-export').addEventListener('click', exportCSV);
+document.getElementById('btn-temp').addEventListener('click', () => toggleMode('temperature'));
+document.getElementById('btn-humid').addEventListener('click', () => toggleMode('humidity'));
+
+function showFolderBrowser() {
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7); z-index: 1000; display: flex;
+    align-items: center; justify-content: center;
+  `;
+  
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    background: #1a1d24; border-radius: 12px; width: 600px; height: 400px;
+    display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  `;
+  
+  const header = document.createElement('div');
+  header.style.cssText = `
+    padding: 12px 16px; border-bottom: 1px solid #333;
+    display: flex; align-items: center; justify-content: space-between;
+    background: #22252e;
+  `;
+  header.innerHTML = '<span style="color:#f0f2f5;font-weight:600">选择CSV存储路径</span>';
+  
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = `
+    background: none; border: none; color: #888; font-size: 20px;
+    cursor: pointer; padding: 0 8px;
+  `;
+  closeBtn.onclick = () => modal.remove();
+  header.appendChild(closeBtn);
+  
+  const pathBar = document.createElement('div');
+  pathBar.style.cssText = `
+    padding: 8px 16px; background: #262b34; font-size: 12px; color: #8a93a3;
+    overflow-x: auto;
+  `;
+  pathBar.id = 'browser-path';
+  
+  const listContainer = document.createElement('div');
+  listContainer.style.cssText = `
+    flex: 1; overflow-y: auto; padding: 8px;
+  `;
+  listContainer.id = 'browser-list';
+  
+  const footer = document.createElement('div');
+  footer.style.cssText = `
+    padding: 12px 16px; border-top: 1px solid #333;
+    display: flex; justify-content: flex-end; gap: 12px;
+  `;
+  
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '取消';
+  cancelBtn.style.cssText = `
+    background: #262b34; color: #e6e6e6; border: 1px solid #333;
+    border-radius: 6px; padding: 6px 16px; cursor: pointer;
+  `;
+  cancelBtn.onclick = () => modal.remove();
+  
+  const selectBtn = document.createElement('button');
+  selectBtn.textContent = '选择';
+  selectBtn.style.cssText = `
+    background: #3498DB; color: #fff; border: none;
+    border-radius: 6px; padding: 6px 16px; cursor: pointer;
+  `;
+  
+  dialog.appendChild(header);
+  dialog.appendChild(pathBar);
+  dialog.appendChild(listContainer);
+  dialog.appendChild(footer);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(selectBtn);
+  modal.appendChild(dialog);
+  document.body.appendChild(modal);
+  
+  let currentPath = '';
+  
+  async function loadPath(path) {
+    try {
+      const resp = await fetch(`/api/browse-directory?path=${encodeURIComponent(path)}`);
+      const data = await resp.json();
+      
+      currentPath = data.current;
+      document.getElementById('browser-path').textContent = data.current || '根目录';
+      
+      const list = document.getElementById('browser-list');
+      list.innerHTML = '';
+      
+      if (data.parent) {
+        const item = document.createElement('div');
+        item.style.cssText = `
+          padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+          border-radius: 6px;
+        `;
+        item.innerHTML = '<span style="color:#8a93a3">📁</span> .. (上级目录)';
+        item.onmouseover = () => item.style.background = '#262b34';
+        item.onmouseout = () => item.style.background = 'transparent';
+        item.onclick = () => loadPath(data.parent);
+        list.appendChild(item);
+      }
+      
+      data.directories.forEach(dir => {
+        const item = document.createElement('div');
+        item.style.cssText = `
+          padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+          border-radius: 6px;
+        `;
+        item.innerHTML = `<span style="color:#3498DB">📁</span> ${dir}`;
+        item.onmouseover = () => item.style.background = '#262b34';
+        item.onmouseout = () => item.style.background = 'transparent';
+        const separator = path && path.endsWith('\\') ? '' : '\\';
+        item.onclick = () => loadPath(path ? `${path}${separator}${dir}` : dir);
+        list.appendChild(item);
+      });
+    } catch (e) {
+      console.error('Failed to load directory:', e);
+    }
+  }
+  
+  selectBtn.onclick = () => {
+    if (currentPath) {
+      document.getElementById('csv-path').value = currentPath;
+    }
+    modal.remove();
+  };
+  
+  loadPath('');
+}
+
+document.getElementById('btn-browse-path').addEventListener('click', showFolderBrowser);
+
+initChart();
+refreshPorts();
+loadHistory();
+loadSensorData();
+</script>
+</body></html>

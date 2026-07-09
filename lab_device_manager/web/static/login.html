@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>登录 · 设备采集管理台</title>
+<style>
+ *{box-sizing:border-box}
+ html,body{margin:0;padding:0;height:100%;font-family:-apple-system,"PingFang SC",sans-serif}
+ .wrap{display:flex;height:100vh;width:100vw;overflow:hidden}
+ .left{
+   flex:1.2;
+   background:#000;
+   display:flex;align-items:center;justify-content:center;
+   position:relative;
+ }
+ .left::before{
+   content:"";
+   position:absolute;inset:0;
+   background:radial-gradient(circle at 30% 50%, rgba(110,168,255,0.12) 0%, transparent 55%);
+ }
+ .left img{
+   position:relative;
+   max-width:72%;max-height:72%;
+   object-fit:contain;
+   filter:drop-shadow(0 0 40px rgba(110,168,255,0.25));
+ }
+ .right{
+   flex:1;
+   background:#0f1115;
+   display:flex;align-items:center;justify-content:center;
+   padding:40px;
+ }
+ .card{
+   width:100%;max-width:380px;
+   background:#1a1d24;border-radius:16px;
+   padding:36px 32px;
+   box-shadow:0 20px 60px rgba(0,0,0,0.45);
+   border:1px solid rgba(255,255,255,0.06);
+ }
+ .card .logo-small{
+   height:42px;width:auto;margin-bottom:18px;
+ }
+ .card h1{
+   margin:0 0 6px;font-size:22px;font-weight:600;color:#f0f2f5;letter-spacing:0.3px;
+ }
+ .card p{
+   margin:0 0 26px;font-size:13px;color:#8a93a3;
+ }
+ .field{margin-bottom:18px}
+ .field label{display:block;font-size:12px;color:#8a93a3;margin-bottom:6px}
+ .field input{
+   width:100%;
+   background:#0f1115;border:1px solid #333;border-radius:8px;
+   padding:11px 12px;color:#e6e6e6;font-size:14px;
+   outline:none;transition:border-color .15s;
+ }
+ .field input:focus{border-color:#6ea8ff}
+ .error{
+   display:none;
+   background:rgba(255,92,92,0.1);color:#ff5c5c;
+   border:1px solid rgba(255,92,92,0.25);border-radius:8px;
+   padding:10px 12px;font-size:13px;margin-bottom:18px;
+ }
+ .btn{
+   width:100%;
+   background:#6ea8ff;color:#0f1115;border:none;border-radius:8px;
+   padding:12px;font-size:15px;font-weight:600;cursor:pointer;
+   transition:background .15s, transform .12s;
+ }
+ .btn:hover{background:#9ec5ff}
+ .btn:active{transform:scale(0.99)}
+ .hint{
+   margin-top:18px;text-align:center;font-size:12px;color:#555;
+ }
+ @media (max-width:860px){
+   .left{display:none}
+   .right{flex:none;width:100%}
+ }
+</style></head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <img src="/static/logo.png" alt="Puricore">
+  </div>
+  <div class="right">
+    <form class="card" onsubmit="return doLogin()">
+      <img src="/static/logo.png" alt="Puricore" class="logo-small">
+      <h1>欢迎回来</h1>
+      <p>请输入密码登录设备采集管理台</p>
+      <div id="error" class="error">密码错误</div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" id="password" placeholder="Password" autofocus>
+      </div>
+      <button type="submit" class="btn">登录</button>
+      <div class="hint">本地实验室 · 仅授权人员使用</div>
+    </form>
+  </div>
+</div>
+<script>
+async function doLogin(){
+  const pwd = document.getElementById("password").value;
+  const err = document.getElementById("error");
+  try {
+    const r = await fetch("/login", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({password: pwd})
+    });
+    if (r.ok) {
+      window.location.href = "/";
+    } else {
+      err.style.display = "block";
+    }
+  } catch (e) {
+    err.textContent = "网络错误，请重试";
+    err.style.display = "block";
+  }
+  return false;
+}
+</script>
+</body></html>
