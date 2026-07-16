@@ -115,6 +115,12 @@ canvas{width:100%;height:100%}
       <label>秒</label>
     </div>
     <div class="sep"></div>
+    <div class="interval">
+      <label>温度上限：</label>
+      <input type="number" id="temp-limit-input" value="40" min="-40" max="200">
+      <label>℃</label>
+    </div>
+    <div class="sep"></div>
     <button id="btn-export" class="btn-export">导出数据</button>
   </div>
 
@@ -186,7 +192,8 @@ let currentMode = 'temperature';
 let historyData = [];
 let maxPoints = 60;
 let isAcquiring = false;
-let pollInterval = null;
+let pollTimeout = null;
+let tempLimitLine = null;
 
 function fmtTs(ms) {
   return ms == null ? '-' : new Date(ms).toLocaleString();
@@ -251,6 +258,7 @@ function initChart() {
       }
     }
   });
+  updateTempLimitLine();
 }
 
 function updateChartData(data) {
@@ -277,7 +285,69 @@ function updateChartData(data) {
   const yLabel = currentMode === 'temperature' ? '温度 (℃)' : '湿度 (%RH)';
   chart.options.scales.y.title = { display: true, text: yLabel, color: '#8a93a3' };
   
+  updateTempLimitLine();
   chart.update('none');
+}
+
+function updateTempLimitLine() {
+  if (!chart) return;
+  const limit = parseFloat(document.getElementById('temp-limit-input').value);
+  if (isNaN(limit)) return;
+  
+  const existingIndex = chart.data.datasets.findIndex(ds => ds.label === '温度上限');
+  if (currentMode === 'temperature') {
+    const limitData = chart.data.labels.map(() => limit);
+    if (existingIndex >= 0) {
+      chart.data.datasets[existingIndex].data = limitData;
+    } else {
+      chart.data.datasets.push({
+        label: '温度上限',
+        data: limitData,
+        borderColor: '#ff5c5c',
+        borderWidth: 2,
+        borderDash: [5, 5],
+        pointRadius: 0,
+        fill: false,
+        order: 10,
+      });
+    }
+  } else if (existingIndex >= 0) {
+    chart.data.datasets.splice(existingIndex, 1);
+  }
+}
+
+function checkTempAlarm(data) {
+  const limit = parseFloat(document.getElementById('temp-limit-input').value);
+  if (isNaN(limit)) return;
+  
+  const channels = data.channels || [];
+  let alarm = false;
+  let alarmMsg = '';
+  
+  channels.forEach(ch => {
+    if (ch.temp_c != null && ch.temp_c >= limit) {
+      alarm = true;
+      alarmMsg += `CH${ch.channel}温度 ${ch.temp_c.toFixed(1)}℃ 超过上限 ${limit}℃\n`;
+      const card = document.querySelector(`.channel-card.ch${ch.channel}`);
+      if (card) {
+        card.style.background = 'rgba(255,92,92,0.1)';
+        card.style.borderColor = '#ff5c5c';
+      }
+    } else {
+      const card = document.querySelector(`.channel-card.ch${ch.channel}`);
+      if (card) {
+        card.style.background = '';
+        card.style.borderColor = '';
+      }
+    }
+  });
+  
+  if (alarm) {
+    setStatus('⚠ 温度报警：' + alarmMsg.trim());
+    document.getElementById('status-bar').style.color = '#ff5c5c';
+  } else {
+    document.getElementById('status-bar').style.color = '#8a93a3';
+  }
 }
 
 async function refreshPorts() {
@@ -409,6 +479,7 @@ async function loadSensorData() {
       historyData.push(newPoint);
       if (historyData.length > maxPoints) historyData.shift();
       updateChartData(historyData);
+      checkTempAlarm(data);
       
       if (isAcquiring) {
         const csvPath = document.getElementById('csv-path').value || 'data';
@@ -477,11 +548,24 @@ function startAcquisition() {
   document.getElementById('btn-stop').disabled = false;
   setStatus('采集中');
   
-  const interval = parseInt(document.getElementById('interval-input').value) || 60;
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(() => {
-    loadSensorData();
-  }, interval * 1000);
+  if (pollTimeout) clearTimeout(pollTimeout);
+  
+  function scheduleNextPoll() {
+    const now = new Date();
+    const interval = parseInt(document.getElementById('interval-input').value) || 60;
+    const msToNext = (interval - (now.getSeconds() % interval)) * 1000 - now.getMilliseconds();
+    const delay = msToNext <= 0 ? interval * 1000 : msToNext;
+    
+    pollTimeout = setTimeout(() => {
+      loadSensorData();
+      if (isAcquiring) {
+        scheduleNextPoll();
+      }
+    }, delay);
+  }
+  
+  loadSensorData();
+  scheduleNextPoll();
 }
 
 let lastDataPoint = null;
@@ -491,9 +575,9 @@ function stopAcquisition() {
   isAcquiring = false;
   document.getElementById('btn-start').disabled = false;
   document.getElementById('btn-stop').disabled = true;
-  if (pollInterval) {
-    clearInterval(pollInterval);
-    pollInterval = null;
+  if (pollTimeout) {
+    clearTimeout(pollTimeout);
+    pollTimeout = null;
   }
   
   if (lastDataPoint) {
@@ -680,6 +764,10 @@ function showFolderBrowser() {
 }
 
 document.getElementById('btn-browse-path').addEventListener('click', showFolderBrowser);
+document.getElementById('temp-limit-input').addEventListener('change', () => {
+  updateTempLimitLine();
+  chart.update('none');
+});
 
 initChart();
 refreshPorts();

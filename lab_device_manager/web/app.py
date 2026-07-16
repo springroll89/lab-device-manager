@@ -463,8 +463,8 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
         for i, ch in enumerate(channels_data):
             channels.append({
                 "channel": i + 1,
-                "temp_c": ch.get("temp"),
-                "humid_rh": ch.get("humid"),
+                "temp_c": ch.get("temp_c"),
+                "humid_rh": ch.get("humid_rh"),
             })
         return jsonify({
             "device_id": device_id,
@@ -474,7 +474,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             "timestamp": snap.timestamp,
             "channels": channels,
             "avg_temp_c": snap.temp_c,
-            "avg_humid_rh": metrics.get("ch1_humid_rh"),
+            "avg_humid_rh": metrics.get("avg_humid_rh"),
         })
 
     @app.get("/api/devices/<int:device_id>/sensor-history")
