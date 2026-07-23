@@ -115,6 +115,60 @@ def test_device_detail_includes_metrics_in_latest(tmp_path):
     assert data["metrics"]["syringe_code"] == 9
 
 
+def test_whd_realtime_data_reads_latest_snapshot_without_polling_or_writing():
+    repo = Repository(":memory:")
+    device_id = repo.upsert_device("whd-1", "whd46", alias="环境温湿度")
+    snapshot = StatusSnapshot(
+        timestamp=time.time(),
+        state="running",
+        work_mode="monitoring",
+        device_id="whd",
+        temp_c=25.0,
+        metrics={
+            "channels": [
+                {"temp": 24.0, "humid": 40.0},
+                {"temp": 25.0, "humid": 41.0},
+                {"temp": 26.0, "humid": 42.0},
+            ],
+            "avg_humid_rh": 41.0,
+        },
+    )
+
+    class PollingMustNotRun:
+        is_connected = True
+
+        def read_channels(self):
+            raise AssertionError("GET realtime-data must not poll the serial adapter")
+
+    class WHDEngine(StaticEngine):
+        def _get_adapter(self, requested_id):
+            assert requested_id == device_id
+            return PollingMustNotRun()
+
+    engine = WHDEngine(
+        {device_id: snapshot},
+        {
+            device_id: DeviceConfig(
+                name="whd-1", type="whd46", alias="环境温湿度"
+            )
+        },
+    )
+    app = create_app(engine, repo, secret_key="test-secret")
+
+    response = app.test_client().get(
+        f"/api/devices/{device_id}/realtime-data"
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["channels"][0] == {
+        "channel": 1,
+        "temp_c": 24.0,
+        "humid_rh": 40.0,
+    }
+    assert repo.list_samples_for_device(device_id) == []
+
+
 def test_device_detail_filters_runs_by_device_id(tmp_path):
     """SECURITY: /api/devices/<id> must only return that device's runs — never
     another device's. (Regression: previously returned repo.list_runs for ALL
@@ -232,12 +286,54 @@ def test_run_page_serves_html(tmp_path):
     assert b"run.js" in r.data
 
 
-def test_login_disabled_redirects_to_index(tmp_path):
-    """When login_password is empty, /login should redirect to / (auth disabled)."""
+def test_shared_premium_theme_is_served_by_every_operator_page(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    theme = client.get("/static/puricore-theme.css")
+    assert theme.status_code == 200
+    assert b"--pc-accent" in theme.data
+    assert b"prefers-reduced-motion" in theme.data
+
+    for page in (
+        "index.html",
+        "device.html",
+        "run.html",
+        "sensor.html",
+        "login.html",
+        "experiment.html",
+    ):
+        response = client.get(f"/static/{page}")
+        assert response.status_code == 200
+        assert b"/static/puricore-theme.css" in response.data
+
+
+def test_login_page_serves_identity_mode_when_password_is_disabled(tmp_path):
     app, repo, did = _app(tmp_path, login_password="")
-    r = app.test_client().get("/login")
-    assert r.status_code == 302
-    assert r.headers["Location"] == "/"
+    client = app.test_client()
+
+    page = client.get("/login")
+    mode = client.get("/api/auth-mode")
+
+    assert page.status_code == 200
+    assert b"\xe8\xb4\xa6\xe5\x8f\xb7" in page.data  # "账号"
+    assert mode.status_code == 200
+    assert mode.get_json() == {"password_required": False}
+
+
+def test_identity_mode_login_sets_named_operator_without_password(tmp_path):
+    app, repo, did = _app(tmp_path, login_password="")
+    client = app.test_client()
+
+    response = client.post("/login", json={"username": "王小明"})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "operator": "王小明"}
+    assert client.get("/api/session").get_json() == {
+        "authenticated": True,
+        "operator": "王小明",
+        "password_required": False,
+    }
 
 
 def test_index_requires_login_when_enabled(tmp_path):
@@ -264,27 +360,64 @@ def test_run_page_requires_login_when_enabled(tmp_path):
 
 def test_login_page_served_when_enabled(tmp_path):
     app, repo, did = _app(tmp_path, login_password="secret")
-    r = app.test_client().get("/login")
+    client = app.test_client()
+    r = client.get("/login")
     assert r.status_code == 200
     assert b"\xe5\xaf\x86\xe7\xa0\x81" in r.data  # "密码"
+    assert client.get("/api/auth-mode").get_json() == {
+        "password_required": True
+    }
 
 
 def test_login_with_valid_password_creates_session(tmp_path):
     app, repo, did = _app(tmp_path, login_password="secret")
     client = app.test_client()
-    r = client.post("/login", json={"password": "secret"})
+    r = client.post(
+        "/login",
+        json={"username": "王小明", "password": "secret"},
+    )
     assert r.status_code == 200
     assert r.get_json()["ok"] is True
     with client.session_transaction() as sess:
         assert sess.get("logged_in") is True
 
 
+def test_login_session_carries_operator_name(tmp_path):
+    app, repo, did = _app(tmp_path, login_password="secret")
+    client = app.test_client()
+
+    r = client.post(
+        "/login",
+        json={"username": "王小明", "password": "secret"},
+    )
+
+    assert r.status_code == 200
+    assert client.get("/api/session").get_json()["operator"] == "王小明"
+    with client.session_transaction() as sess:
+        assert sess.get("username") == "王小明"
+
+
 def test_login_with_invalid_password_rejected(tmp_path):
     app, repo, did = _app(tmp_path, login_password="secret")
     client = app.test_client()
-    r = client.post("/login", json={"password": "wrong"})
+    r = client.post(
+        "/login",
+        json={"username": "王小明", "password": "wrong"},
+    )
     assert r.status_code == 401
     assert r.get_json()["ok"] is False
+    with client.session_transaction() as sess:
+        assert sess.get("logged_in") is None
+
+
+def test_login_rejects_missing_operator_name(tmp_path):
+    app, repo, did = _app(tmp_path, login_password="secret")
+    client = app.test_client()
+
+    r = client.post("/login", json={"username": " ", "password": "secret"})
+
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "operator name is required"
     with client.session_transaction() as sess:
         assert sess.get("logged_in") is None
 
@@ -292,7 +425,10 @@ def test_login_with_invalid_password_rejected(tmp_path):
 def test_authenticated_user_can_access_protected_routes(tmp_path):
     app, repo, did = _app(tmp_path, login_password="secret")
     client = app.test_client()
-    client.post("/login", json={"password": "secret"})
+    client.post(
+        "/login",
+        json={"username": "王小明", "password": "secret"},
+    )
     r = client.get("/")
     assert r.status_code == 200
     r = client.get(f"/device/{did}")
@@ -305,7 +441,10 @@ def test_authenticated_user_can_access_protected_routes(tmp_path):
 def test_logout_clears_session(tmp_path):
     app, repo, did = _app(tmp_path, login_password="secret")
     client = app.test_client()
-    client.post("/login", json={"password": "secret"})
+    client.post(
+        "/login",
+        json={"username": "王小明", "password": "secret"},
+    )
     r = client.post("/logout")
     assert r.status_code == 302
     assert r.headers["Location"] == "/login"
@@ -319,4 +458,3 @@ def test_api_routes_require_login_when_enabled(tmp_path):
     r = app.test_client().get("/api/status")
     assert r.status_code == 401
     assert r.get_json()["error"] == "unauthorized"
-

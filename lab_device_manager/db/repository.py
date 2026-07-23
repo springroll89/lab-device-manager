@@ -1,11 +1,15 @@
 from __future__ import annotations
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Optional
+from lab_device_manager.db.experiment_store import ExperimentStore
 from lab_device_manager.db.models import Device, Run, SampleRow, EventRow
 
 _SCHEMA = Path(__file__).parent / "schema.sql"
+_MIGRATIONS = Path(__file__).parent / "migrations"
 
 
 class Repository:
@@ -16,14 +20,106 @@ class Repository:
         # and RunDetector writes to this connection from those threads. SQLite
         # serializes writes internally; the GIL plus per-statement commit() keeps
         # single-writer access safe.
+        database_path = None if db_path == ":memory:" else Path(db_path)
+        existing_database = bool(
+            database_path
+            and database_path.exists()
+            and database_path.stat().st_size > 0
+        )
+        self.last_migration_backup = None
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.RLock()
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=5000")   # ms — wait+retry on SQLITE_BUSY before erroring (multi-device write contention)
         self._conn.row_factory = sqlite3.Row
+        if existing_database:
+            pending = self._pending_migration_paths()
+            if pending:
+                self.last_migration_backup = self._create_migration_backup(
+                    database_path, pending[0].stem
+                )
         self._conn.executescript(_SCHEMA.read_text(encoding="utf-8"))
+        self._apply_migrations()
         self._conn.commit()
+        self.experiments = ExperimentStore(self._conn, self._lock)
+
+    def _pending_migration_paths(self) -> list[Path]:
+        table = self._conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='schema_version'"""
+        ).fetchone()
+        if table is None:
+            applied = set()
+        else:
+            applied = {
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchall()
+            }
+        return [
+            path
+            for path in sorted(_MIGRATIONS.glob("*.sql"))
+            if path.stem not in applied
+        ]
+
+    def _create_migration_backup(
+        self, database_path: Path, next_version: str
+    ) -> str:
+        timestamp = int(time.time() * 1000)
+        backup_path = database_path.with_name(
+            f"{database_path.name}.pre-{next_version}-{timestamp}.bak"
+        )
+        backup = sqlite3.connect(backup_path)
+        try:
+            self._conn.backup(backup)
+        finally:
+            backup.close()
+        return str(backup_path)
+
+    def _apply_migrations(self):
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS schema_version (
+                 version TEXT PRIMARY KEY,
+                 applied_at_ms INTEGER NOT NULL
+               )"""
+        )
+        applied = {
+            row[0] for row in self._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchall()
+        }
+        for path in sorted(_MIGRATIONS.glob("*.sql")):
+            version = path.stem
+            if version in applied:
+                continue
+            safe_version = version.replace("'", "''")
+            script = path.read_text(encoding="utf-8")
+            applied_at_ms = int(time.time() * 1000)
+            try:
+                self._conn.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + script
+                    + "\n"
+                    + "INSERT INTO schema_version(version, applied_at_ms) "
+                    + f"VALUES('{safe_version}', {applied_at_ms});\n"
+                    + "COMMIT;"
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def close(self):
-        self._conn.close()
+        connection = getattr(self, "_conn", None)
+        if connection is not None:
+            connection.close()
+            self._conn = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def upsert_device(self, name: str, device_type: str, alias: str = "") -> int:
         row = self._conn.execute("SELECT id FROM device WHERE name=?", (name,)).fetchone()

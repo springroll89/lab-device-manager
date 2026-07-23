@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh">
-<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>温湿度控制器 - 设备采集管理台</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" href="data:,"><title>温湿度控制器 - 设备采集管理台</title>
 <style>
 body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
 header{padding:10px 20px;border-bottom:1px solid rgba(255,255,255,0.08);background:linear-gradient(180deg,rgba(26,29,36,0.98) 0%,rgba(15,17,21,0.98) 100%);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 4px 20px rgba(0,0,0,0.25)}
@@ -72,8 +72,10 @@ canvas{width:100%;height:100%}
 .back-link:hover{text-decoration:underline}
 
 .status-bar{background:#1a1d24;border-radius:8px;padding:8px 12px;font-size:12px;color:#8a93a3;margin-top:12px}
-</style></head>
-<body>
+</style>
+<link rel="stylesheet" href="/static/puricore-theme.css">
+</head>
+<body class="page-sensor">
 <header>
   <div class="brand">
     <img src="/static/logo.png" alt="Puricore" class="logo">
@@ -88,7 +90,7 @@ canvas{width:100%;height:100%}
   
   <div class="device-header">
     <h1 id="device-name">温湿度控制器</h1>
-    <span id="device-status" class="status s-offline">offline</span>
+    <span id="device-status" class="status s-offline">离线</span>
   </div>
 
   <div class="conn-bar">
@@ -184,8 +186,15 @@ canvas{width:100%;height:100%}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const deviceId = parseInt(window.location.pathname.split('/').pop());
-const CH_COLORS = ['#E74C3C', '#2ECC71', '#3498DB'];
+const CH_COLORS = ['#7CE3BF', '#87B7D7', '#D1B477'];
 const CH_LABELS = ['CH1', 'CH2', 'CH3'];
+const STATE_LABELS = {
+  running: '运行中',
+  stopped: '已停止',
+  paused: '已暂停',
+  alarm: '异常',
+  offline: '离线',
+};
 
 let chart = null;
 let currentMode = 'temperature';
@@ -439,7 +448,7 @@ async function loadSensorData() {
     document.getElementById('device-name').textContent = data.device_alias || data.device_name || '温湿度控制器';
     
     const statusEl = document.getElementById('device-status');
-    statusEl.textContent = data.state || 'offline';
+    statusEl.textContent = STATE_LABELS[data.state] || data.state || STATE_LABELS.offline;
     statusEl.className = `status s-${data.state || 'offline'}`;
     
     if (data.state === 'running') {

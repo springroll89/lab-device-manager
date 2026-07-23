@@ -1,0 +1,92 @@
+{
+  "devices": [
+    {
+      "key": "stirrer",
+      "name": "hms-c-01",
+      "type": "stirrer",
+      "alias": "HMS-C 搅拌器",
+      "role": "stirrer",
+      "metric_key": "speed_rpm",
+      "channel_selector": "1"
+    },
+    {
+      "key": "acid_pump",
+      "name": "tyd02-01",
+      "type": "tyd02",
+      "alias": "TYD02 注射泵",
+      "role": "acid_pump",
+      "metric_key": "acc_volume",
+      "channel_selector": "1",
+      "setpoints": {
+        "inject_rate": 0.5,
+        "target_volume": 5.0,
+        "target_unit": "mL"
+      }
+    },
+    {
+      "key": "viscometer",
+      "name": "fangrui-01",
+      "type": "viscometer",
+      "alias": "方瑞粘度计",
+      "role": "viscometer",
+      "metric_key": "viscosity_mPas",
+      "channel_selector": "1"
+    },
+    {
+      "key": "reaction_temp",
+      "name": "whd46-01",
+      "type": "whd46",
+      "alias": "WHD46-33 反应温度",
+      "role": "reaction_temp",
+      "metric_key": "ch2_temp_c",
+      "channel_selector": "2"
+    }
+  ],
+  "temperature_samples": [
+    {
+      "offset_min": 0,
+      "top_level_temp_c": 99.9,
+      "metrics": {
+        "ch1_temp_c": 20.0,
+        "ch2_temp_c": 39.8,
+        "ch3_temp_c": 80.0
+      }
+    },
+    {
+      "offset_min": 20,
+      "top_level_temp_c": 99.9,
+      "metrics": {
+        "ch1_temp_c": 20.0,
+        "ch2_temp_c": 40.1,
+        "ch3_temp_c": 80.0
+      }
+    },
+    {
+      "offset_min": 40,
+      "top_level_temp_c": 99.9,
+      "metrics": {
+        "ch1_temp_c": 20.0,
+        "ch2_temp_c": 40.3,
+        "ch3_temp_c": 80.0
+      }
+    }
+  ],
+  "viscosity_measurements": [
+    {
+      "viscosity_mpas": 5.0,
+      "sample_temp_c": 25.0,
+      "reaction_temp_c": 40.0,
+      "rotor": "18",
+      "rpm": 60,
+      "torque_pct": 50
+    },
+    {
+      "viscosity_mpas": 5.3,
+      "sample_temp_c": 25.0,
+      "reaction_temp_c": 40.1,
+      "rotor": "18",
+      "rpm": 60,
+      "torque_pct": 52
+    }
+  ]
+}

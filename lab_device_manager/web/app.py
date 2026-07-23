@@ -6,16 +6,33 @@ import time
 from io import BytesIO
 
 import functools
+import sqlite3
 from datetime import timedelta
 from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory, session, url_for
 from openpyxl import Workbook
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Rect, String
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.platypus import (
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from lab_device_manager.config import _load_or_create_secret
 from lab_device_manager.db.models import fmt_ts_ms
+from lab_device_manager.experiments.service import R201Error, R201Service, STEP_LABELS
+from lab_device_manager.web.trace_labels import (
+    qr_svg,
+    storage_location_label_html,
+    trace_labels_html,
+)
 
 _MAX_RUN_LIMIT = 1000
 
@@ -31,6 +48,19 @@ def _snap_to_dict(snap):
         "alarm": snap.alarm, "ts_ms": int(snap.timestamp * 1000),
         "metrics": dict(snap.metrics) if snap.metrics else {},
     }
+
+
+def _whd_channels(metrics):
+    channels = []
+    for index, channel in enumerate((metrics or {}).get("channels", [])):
+        channels.append(
+            {
+                "channel": channel.get("channel", index + 1),
+                "temp_c": channel.get("temp_c", channel.get("temp")),
+                "humid_rh": channel.get("humid_rh", channel.get("humid")),
+            }
+        )
+    return channels
 
 
 def _run_to_dict(run):
@@ -147,8 +177,488 @@ def _build_pdf_report(run, samples, events):
     return buf.getvalue()
 
 
+def _trend_drawing(
+    points: list[tuple[int, float]],
+    unit: str,
+    target_min=None,
+    target_max=None,
+) -> Drawing:
+    width, height = 510, 155
+    left, right, top, bottom = 48, 12, 18, 28
+    drawing = Drawing(width, height)
+    if not points:
+        drawing.add(
+            String(
+                width / 2,
+                height / 2,
+                "暂无数据",
+                fontName="STSong-Light",
+                fontSize=9,
+                textAnchor="middle",
+                fillColor=colors.HexColor("#677783"),
+            )
+        )
+        return drawing
+    x_values = [float(point[0]) for point in points]
+    y_values = [float(point[1]) for point in points]
+    configured = [
+        float(value)
+        for value in (target_min, target_max)
+        if value is not None
+    ]
+    all_y = y_values + configured
+    min_x, max_x = min(x_values), max(x_values)
+    min_y, max_y = min(all_y), max(all_y)
+    if min_y == max_y:
+        min_y -= 1
+        max_y += 1
+    margin_y = (max_y - min_y) * 0.12
+    min_y -= margin_y
+    max_y += margin_y
+    chart_width = width - left - right
+    chart_height = height - top - bottom
+
+    def x_pos(value):
+        return left + (
+            (value - min_x) / max(1.0, max_x - min_x)
+        ) * chart_width
+
+    def y_pos(value):
+        return bottom + (
+            (value - min_y) / max(0.001, max_y - min_y)
+        ) * chart_height
+
+    if len(configured) == 2:
+        low, high = sorted(configured)
+        drawing.add(
+            Rect(
+                left,
+                y_pos(low),
+                chart_width,
+                max(1, y_pos(high) - y_pos(low)),
+                strokeColor=None,
+                fillColor=colors.HexColor("#E4F5EF"),
+            )
+        )
+    drawing.add(
+        Line(
+            left,
+            bottom,
+            width - right,
+            bottom,
+            strokeColor=colors.HexColor("#7C8992"),
+        )
+    )
+    drawing.add(
+        Line(
+            left,
+            bottom,
+            left,
+            height - top,
+            strokeColor=colors.HexColor("#7C8992"),
+        )
+    )
+    coordinates = [
+        (x_pos(x_value), y_pos(y_value))
+        for x_value, y_value in zip(x_values, y_values)
+    ]
+    drawing.add(
+        PolyLine(
+            coordinates,
+            strokeColor=colors.HexColor("#13795B"),
+            strokeWidth=1.8,
+        )
+    )
+    for x_value, y_value in coordinates:
+        drawing.add(
+            Circle(
+                x_value,
+                y_value,
+                2.4,
+                strokeColor=colors.HexColor("#13795B"),
+                fillColor=colors.white,
+            )
+        )
+    drawing.add(
+        String(
+            4,
+            height - top,
+            f"{max_y:.1f} {unit}",
+            fontName="STSong-Light",
+            fontSize=7,
+            fillColor=colors.HexColor("#58666F"),
+        )
+    )
+    drawing.add(
+        String(
+            4,
+            bottom - 2,
+            f"{min_y:.1f} {unit}",
+            fontName="STSong-Light",
+            fontSize=7,
+            fillColor=colors.HexColor("#58666F"),
+        )
+    )
+    drawing.add(
+        String(
+            left,
+            8,
+            fmt_ts_ms(int(min_x)),
+            fontName="STSong-Light",
+            fontSize=6,
+            fillColor=colors.HexColor("#58666F"),
+        )
+    )
+    drawing.add(
+        String(
+            width - right,
+            8,
+            fmt_ts_ms(int(max_x)),
+            fontName="STSong-Light",
+            fontSize=6,
+            textAnchor="end",
+            fillColor=colors.HexColor("#58666F"),
+        )
+    )
+    return drawing
+
+
+def _build_experiment_pdf(detail: dict) -> bytes:
+    """Build the first R-201 electronic batch record for parallel validation."""
+    buf = BytesIO()
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=32,
+        rightMargin=32,
+        topMargin=32,
+        bottomMargin=32,
+    )
+    styles = getSampleStyleSheet()
+    for name in ("Title", "Heading1", "Heading2", "BodyText"):
+        styles[name].fontName = "STSong-Light"
+    experiment = detail["experiment"]
+    story = [
+        Paragraph("R-201 湿化学合成电子批记录", styles["Title"]),
+        Paragraph(
+            f"Batch ID：{experiment['batch_id']}　"
+            f"体系：{experiment['membrane_system']}　"
+            f"状态：{experiment['status']}",
+            styles["BodyText"],
+        ),
+        Spacer(1, 12),
+    ]
+    meta = [
+        ["配方", f"{experiment['recipe_no']} / {experiment['recipe_version']}"],
+        ["SOP", f"{experiment['sop_code']} / {experiment['sop_version']}"],
+        [
+            "目标粘度",
+            f"{experiment['target_viscosity_min_mpas']}–"
+            f"{experiment['target_viscosity_max_mpas']} mPa.s",
+        ],
+        ["操作员 / 复核员", f"{experiment['operator']} / {experiment['reviewer']}"],
+        ["验证模式", experiment["validation_mode"]],
+        ["参数快照 SHA-256", experiment.get("snapshot_sha256") or "—"],
+        ["下一步", experiment["next_step"]],
+        ["下游路线", experiment["downstream_route_variant"]],
+        ["判定", experiment.get("disposition") or "—"],
+    ]
+    table = Table(meta, colWidths=[110, 400])
+    table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8EEF4")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#9AA7B2")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.extend([table, Spacer(1, 14), Paragraph("配方参数", styles["Heading2"])])
+    parameter_rows = [["代码", "名称", "目标", "实际", "单位", "来源"]]
+    for item in detail["recipe_parameters"]:
+        parameter_rows.append(
+            [
+                item["parameter_code"],
+                item["display_name"],
+                item["target_value"] if item["target_value"] is not None else "—",
+                item["actual_value"] if item["actual_value"] is not None else "—",
+                item["unit"],
+                item["source"],
+            ]
+        )
+    parameter_table = Table(
+        parameter_rows,
+        colWidths=[85, 110, 55, 55, 45, 160],
+        repeatRows=1,
+    )
+    parameter_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend([parameter_table, Spacer(1, 14), Paragraph("物料使用", styles["Heading2"])])
+    material_rows = [["物料", "批号", "有效期", "理论量", "实际量", "外观"]]
+    for item in detail["materials"]:
+        material_rows.append(
+            [
+                item["material_name"],
+                item["lot_no"],
+                item["expires_at"] or "—",
+                (
+                    f"{item['theoretical_value']} {item['unit']}"
+                    if item["theoretical_value"] is not None
+                    else "—"
+                ),
+                f"{item['actual_value']} {item['unit']}",
+                item["appearance"] or "—",
+            ]
+        )
+    material_table = Table(
+        material_rows,
+        colWidths=[85, 85, 75, 80, 80, 105],
+        repeatRows=1,
+    )
+    material_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend([material_table, Spacer(1, 14), Paragraph("步骤执行记录", styles["Heading2"])])
+    step_rows = [["步骤", "状态", "开始", "结束", "结果摘要"]]
+    for step in detail["steps"]:
+        result = step.get("result") or {}
+        summary = "；".join(f"{key}={value}" for key, value in list(result.items())[:4])
+        step_rows.append(
+            [
+                f"{step['step_code']} {STEP_LABELS.get(step['step_code'], '')}",
+                step["status"],
+                fmt_ts_ms(step["started_effective_at_ms"]),
+                fmt_ts_ms(step["ended_effective_at_ms"]) if step["ended_effective_at_ms"] else "—",
+                summary or "—",
+            ]
+        )
+    step_table = Table(step_rows, colWidths=[125, 55, 92, 92, 150], repeatRows=1)
+    step_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend([step_table, Spacer(1, 14), Paragraph("反应温度趋势", styles["Heading2"])])
+    temperature_points = [
+        (item["ts_ms"], item["value"])
+        for item in detail["temperature_series"]
+    ]
+    story.extend(
+        [
+            _trend_drawing(
+                temperature_points,
+                "℃",
+                experiment["spec_snapshot"].get("reaction_temp_min_c"),
+                experiment["spec_snapshot"].get("reaction_temp_max_c"),
+            ),
+            Paragraph(
+                "数据完整性："
+                f"{detail['telemetry_integrity_status']}；"
+                f"样本 {len(temperature_points)} 条；"
+                f"20 分钟检查点 {len(detail['temperature_checkpoints'])} 个；"
+                f"缺口 {len(detail['telemetry_gaps'])} 段。",
+                styles["BodyText"],
+            ),
+            Spacer(1, 14),
+        ]
+    )
+    viscosity_rows = [["时间", "粘度 mPa.s", "扭矩 %", "样品温度 ℃", "转子/转速", "有效"]]
+    for item in detail["measurements"]:
+        if item["measurement_type"] != "viscosity":
+            continue
+        values = item["values"]
+        viscosity_rows.append(
+            [
+                fmt_ts_ms(item["effective_at_ms"]),
+                values.get("viscosity_mpas", "—"),
+                values.get("torque_pct", "—"),
+                values.get("sample_temp_c", "—"),
+                f"{values.get('rotor', '—')} / {values.get('rpm', '—')}",
+                "是" if item["valid"] else "否",
+            ]
+        )
+    viscosity_points = [
+        (
+            item["effective_at_ms"],
+            item["values"]["viscosity_mpas"],
+        )
+        for item in detail["measurements"]
+        if item["measurement_type"] == "viscosity"
+        and item["values"].get("viscosity_mpas") is not None
+    ]
+    viscosity_table = Table(viscosity_rows, colWidths=[105, 75, 55, 75, 85, 45], repeatRows=1)
+    viscosity_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend(
+        [
+            KeepTogether(
+                [
+                    Paragraph("粘度监测", styles["Heading2"]),
+                    _trend_drawing(
+                        viscosity_points,
+                        "mPa.s",
+                        experiment["target_viscosity_min_mpas"],
+                        experiment["target_viscosity_max_mpas"],
+                    ),
+                    viscosity_table,
+                ]
+            ),
+            Spacer(1, 14),
+            Paragraph("设备数据源", styles["Heading2"]),
+        ]
+    )
+    source_rows = [["角色", "设备 ID", "指标/通道", "关联时间", "方式"]]
+    for item in detail["data_sources"]:
+        source_rows.append(
+            [
+                item["device_role"],
+                item["device_id"],
+                f"{item['metric_key']} / {item['channel_selector'] or '—'}",
+                fmt_ts_ms(item["linked_at_ms"]),
+                item["link_method"],
+            ]
+        )
+    source_table = Table(
+        source_rows,
+        colWidths=[90, 55, 135, 145, 75],
+        repeatRows=1,
+    )
+    source_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend(
+        [
+            source_table,
+            Spacer(1, 14),
+            Paragraph("偏差", styles["Heading2"]),
+        ]
+    )
+    deviation_rows = [["编号", "级别", "状态", "描述"]]
+    for item in detail["deviations"]:
+        deviation_rows.append(
+            [item["deviation_no"], item["severity"], item["status"], item["description"]]
+        )
+    deviation_table = Table(deviation_rows, colWidths=[125, 55, 65, 265], repeatRows=1)
+    deviation_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend(
+        [
+            deviation_table,
+            Spacer(1, 14),
+            Paragraph("审计时间轴", styles["Heading2"]),
+        ]
+    )
+    audit_rows = [["有效时间", "接收时间", "事件", "操作者", "时钟状态"]]
+    for item in detail["events"]:
+        audit_rows.append(
+            [
+                fmt_ts_ms(item["effective_at_ms"]),
+                fmt_ts_ms(item["received_at_server_ms"]),
+                item["event_type"],
+                item["actor"],
+                item["clock_sync_status"],
+            ]
+        )
+    audit_table = Table(
+        audit_rows,
+        colWidths=[110, 110, 120, 85, 75],
+        repeatRows=1,
+    )
+    audit_table.setStyle(
+        TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCE6EF")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#AAB4BD")),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend(
+        [
+            audit_table,
+            Spacer(1, 12),
+            Paragraph(
+                "本记录处于 parallel_validation 模式，正式放行仍以受控纸质签名为准。",
+                styles["BodyText"],
+            ),
+        ]
+    )
+
+    def footer(canvas, document):
+        canvas.saveState()
+        canvas.setFont("STSong-Light", 7)
+        canvas.setFillColor(colors.HexColor("#6C7880"))
+        canvas.drawString(32, 18, experiment["batch_id"])
+        canvas.drawRightString(
+            A4[0] - 32,
+            18,
+            f"第 {document.page} 页 | parallel_validation",
+        )
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
+    r201 = R201Service(repo)
     app.secret_key = secret_key if secret_key else _load_or_create_secret()
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
@@ -169,11 +679,96 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             return jsonify({"error": "unauthorized"}), 401
         return redirect(url_for("login_page"))
 
+    def _current_operator():
+        return str(session.get("username") or "本机操作员").strip()
+
+    def _device_capture():
+        captured_at_ms = int(time.time() * 1000)
+        latest = engine.latest()
+        devices = []
+        for device_id, config in engine.device_map().items():
+            snapshot = latest.get(device_id)
+            snapshot_data = _snap_to_dict(snapshot) if snapshot else None
+            recent_samples = repo.list_samples_for_device(
+                device_id, limit=1
+            )
+            sampled_at_ms = (
+                snapshot_data.get("ts_ms") if snapshot_data else None
+            )
+            devices.append(
+                {
+                    "device_id": device_id,
+                    "name": config.name,
+                    "alias": config.alias,
+                    "type": config.type,
+                    "sample_id": (
+                        recent_samples[0].id
+                        if recent_samples
+                        else None
+                    ),
+                    "age_ms": (
+                        max(0, captured_at_ms - sampled_at_ms)
+                        if sampled_at_ms is not None
+                        else None
+                    ),
+                    "snapshot": snapshot_data,
+                }
+            )
+        return {
+            "captured_at_server_ms": captured_at_ms,
+            "devices": devices,
+        }
+
+    def _ensure_automatic_sources(experiment_id: int):
+        detail = r201.get_experiment(experiment_id)
+        experiment = detail["experiment"]
+        existing = {
+            (
+                item["device_id"],
+                item["device_role"],
+                item["metric_key"],
+            )
+            for item in detail["data_sources"]
+            if item["unlinked_at_ms"] is None
+        }
+        role_map = {
+            "tyd02": (("acid_pump", "acc_volume"),),
+            "stirrer": (
+                ("stirrer", "speed"),
+                ("reaction_temp", "temp_c"),
+            ),
+            "viscometer": (("viscometer", "viscosity_mPas"),),
+            "whd46": (("environment", "temp_c"),),
+        }
+        for device_id, config in engine.device_map().items():
+            for role, metric_key in role_map.get(config.type, ()):
+                key = (device_id, role, metric_key)
+                if key in existing:
+                    continue
+                r201.add_data_source(
+                    experiment_id,
+                    {
+                        "client_event_id": (
+                            f"auto-bind-{experiment_id}-{device_id}-"
+                            f"{role}-{metric_key}"
+                        ),
+                        "actor": experiment["operator"],
+                        "device_id": device_id,
+                        "device_role": role,
+                        "metric_key": metric_key,
+                        "linked_at_ms": experiment["created_at_ms"],
+                        "link_method": "automatic",
+                        "confidence": 1.0,
+                        "source_type": "derived",
+                    },
+                )
+                existing.add(key)
+
     @app.before_request
     def require_login():
         if not login_password:
             return None
-        public_endpoints = {"login_page", "login", "static"}
+        public_endpoints = {"login_page", "login", "auth_mode", "static"}
         if request.endpoint in public_endpoints:
             return None
         if session.get("logged_in"):
@@ -182,27 +777,537 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
 
     @app.get("/login")
     def login_page():
-        if not login_password:
-            return redirect(url_for("index"))
         return send_from_directory(app.static_folder, "login.html")
+
+    @app.get("/api/auth-mode")
+    def auth_mode():
+        return jsonify({"password_required": bool(login_password)})
 
     @app.post("/login")
     def login():
         body = request.get_json(silent=True) or {}
-        if body.get("password") == login_password:
-            session["logged_in"] = True
-            return jsonify({"ok": True})
-        return jsonify({"ok": False, "error": "invalid password"}), 401
+        username = str(body.get("username") or "").strip()[:64]
+        if not username:
+            return jsonify(
+                {"ok": False, "error": "operator name is required"}
+            ), 400
+        if login_password and body.get("password") != login_password:
+            return jsonify(
+                {"ok": False, "error": "invalid password"}
+            ), 401
+        session["logged_in"] = True
+        session["username"] = username
+        return jsonify({"ok": True, "operator": username})
 
     @app.post("/logout")
     def logout():
         session.pop("logged_in", None)
+        session.pop("username", None)
         return redirect(url_for("login_page"))
 
     @app.get("/")
     @login_required
     def index():
         return send_from_directory(app.static_folder, "index.html")
+
+    @app.get("/experiments")
+    @app.get("/experiments/<int:experiment_id>")
+    @login_required
+    def experiments_page(experiment_id=None):
+        return send_from_directory(app.static_folder, "experiment.html")
+
+    def _r201_error(exc: Exception):
+        if isinstance(exc, R201Error):
+            payload = {"error": str(exc)}
+            if exc.details:
+                payload["details"] = exc.details
+            return jsonify(payload), exc.status_code
+        if isinstance(exc, sqlite3.IntegrityError):
+            message = str(exc)
+            if "experiment.batch_id" in message:
+                return jsonify({"error": "batch_id already exists"}), 409
+            return jsonify({"error": "database constraint failed"}), 409
+        raise exc
+
+    def _experiment_detail(experiment_id: int):
+        _ensure_automatic_sources(experiment_id)
+        detail = r201.get_experiment(experiment_id)
+        latest = engine.latest()
+        device_map = engine.device_map()
+        devices = []
+        for device_id, config in device_map.items():
+            snapshot = latest.get(device_id)
+            devices.append(
+                {
+                    "id": device_id,
+                    "name": config.name,
+                    "alias": config.alias,
+                    "type": config.type,
+                    "latest": _snap_to_dict(snapshot) if snapshot else None,
+                }
+            )
+        detail["available_devices"] = devices
+        device_by_id = {item["id"]: item for item in devices}
+
+        def process_device(role):
+            bindings = [
+                item
+                for item in detail["data_sources"]
+                if item["device_role"] == role
+                and item["unlinked_at_ms"] is None
+            ]
+            if not bindings:
+                return {"bound": False}
+            binding = bindings[-1]
+            device = device_by_id.get(binding["device_id"])
+            latest_snapshot = device.get("latest") if device else None
+            return {
+                "bound": True,
+                "binding": binding,
+                "device": (
+                    {
+                        "id": device["id"],
+                        "name": device["name"],
+                        "alias": device["alias"],
+                        "type": device["type"],
+                    }
+                    if device
+                    else None
+                ),
+                "latest": latest_snapshot,
+            }
+
+        detail["process_status"] = {
+            "acid_pump": process_device("acid_pump"),
+            "reaction_temp": process_device("reaction_temp"),
+            "stirrer": process_device("stirrer"),
+            "viscometer": process_device("viscometer"),
+            "environment": process_device("environment"),
+        }
+        return detail
+
+    @app.get("/api/experiments")
+    def api_experiments():
+        return jsonify(r201.list_experiments())
+
+    @app.get("/api/session")
+    def api_session():
+        return jsonify(
+            {
+                "authenticated": bool(session.get("username")),
+                "operator": _current_operator(),
+                "password_required": bool(login_password),
+            }
+        )
+
+    @app.get("/api/experiments/next-batch-id")
+    def api_next_batch_id():
+        try:
+            batch_id = r201.suggest_batch_id(
+                request.args.get("membrane_system", ""),
+                request.args.get("date", ""),
+            )
+            return jsonify({"batch_id": batch_id})
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments")
+    def api_create_experiment():
+        try:
+            body = dict(request.get_json(silent=True) or {})
+            if login_password:
+                body["operator"] = _current_operator()
+            else:
+                body.setdefault("operator", _current_operator())
+            body.setdefault("reviewer", "")
+            created = r201.create_experiment(body)
+            return jsonify(created), 201
+        except (R201Error, sqlite3.IntegrityError) as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/experiments/<int:experiment_id>")
+    def api_experiment_detail(experiment_id):
+        try:
+            return jsonify(_experiment_detail(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/experiments/<int:experiment_id>/traceability")
+    def api_experiment_traceability(experiment_id):
+        try:
+            return jsonify(r201.get_traceability(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/trace-items")
+    def api_create_trace_items(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            return jsonify(
+                r201.create_trace_items(experiment_id, body)
+            ), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/trace-items/<int:trace_item_id>/store")
+    def api_store_trace_item(trace_item_id):
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            return jsonify(
+                r201.transition_trace_item(
+                    trace_item_id, "store", body
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/trace-items/<int:trace_item_id>/retrieve")
+    def api_retrieve_trace_item(trace_item_id):
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            return jsonify(
+                r201.transition_trace_item(
+                    trace_item_id, "retrieve", body
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/trace-labels")
+    def api_request_trace_labels(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            jobs = r201.request_trace_labels(experiment_id, body)
+            item_ids = ",".join(
+                str(item_id) for item_id in body.get("item_ids") or []
+            )
+            copies = int(body.get("copies", 1))
+            return jsonify(
+                {
+                    "jobs": jobs,
+                    "print_url": url_for(
+                        "api_print_trace_labels",
+                        experiment_id=experiment_id,
+                        item_ids=item_ids,
+                        copies=copies,
+                    ),
+                }
+            ), 201
+        except (R201Error, TypeError, ValueError) as exc:
+            if isinstance(exc, R201Error):
+                return _r201_error(exc)
+            return _r201_error(R201Error(str(exc)))
+
+    @app.get(
+        "/api/experiments/<int:experiment_id>/trace-labels/print"
+    )
+    def api_print_trace_labels(experiment_id):
+        try:
+            requested_ids = [
+                int(value)
+                for value in request.args.get("item_ids", "").split(",")
+                if value
+            ]
+            copies = int(request.args.get("copies", "1"))
+            if not requested_ids:
+                raise R201Error("item_ids must contain at least one item")
+            if not 1 <= copies <= 20:
+                raise R201Error("copies must be between 1 and 20")
+            traceability = r201.get_traceability(experiment_id)
+            by_id = {item["id"]: item for item in traceability["items"]}
+            items = []
+            for item_id in requested_ids:
+                if item_id not in by_id:
+                    raise R201Error(
+                        "trace item does not belong to experiment", 404
+                    )
+                items.append(by_id[item_id])
+            experiment = r201.get_experiment(experiment_id)["experiment"]
+            return Response(
+                trace_labels_html(items, experiment, copies),
+                mimetype="text/html",
+            )
+        except (R201Error, TypeError, ValueError) as exc:
+            if isinstance(exc, R201Error):
+                return _r201_error(exc)
+            return _r201_error(R201Error(str(exc)))
+
+    @app.get("/api/storage-locations")
+    def api_storage_locations():
+        return jsonify(r201.list_storage_locations())
+
+    @app.post("/api/storage-locations")
+    def api_create_storage_location():
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            return jsonify(r201.create_storage_location(body)), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/storage-locations/<int:location_id>/print")
+    def api_request_location_label(location_id):
+        body = dict(request.get_json(silent=True) or {})
+        if login_password:
+            body["actor"] = _current_operator()
+        else:
+            body.setdefault("actor", _current_operator())
+        try:
+            job = r201.request_location_label(location_id, body)
+            return jsonify(
+                {
+                    "job": job,
+                    "print_url": url_for(
+                        "api_print_storage_location_label",
+                        location_id=location_id,
+                        copies=body.get("copies", 1),
+                    ),
+                }
+            ), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/storage-locations/<int:location_id>/label")
+    def api_print_storage_location_label(location_id):
+        location = repo.experiments.get_storage_location(location_id)
+        if location is None:
+            return _r201_error(
+                R201Error("storage location not found", 404)
+            )
+        try:
+            copies = int(request.args.get("copies", "1"))
+        except ValueError:
+            return _r201_error(R201Error("copies must be an integer"))
+        if not 1 <= copies <= 20:
+            return _r201_error(
+                R201Error("copies must be between 1 and 20")
+            )
+        return Response(
+            storage_location_label_html(location, copies),
+            mimetype="text/html",
+        )
+
+    @app.get("/api/trace/lookup")
+    def api_trace_lookup():
+        try:
+            return jsonify(
+                r201.lookup_trace_code(request.args.get("code", ""))
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/trace/qr.svg")
+    def api_trace_qr():
+        try:
+            found = r201.lookup_trace_code(
+                request.args.get("code", "")
+            )
+            if found["kind"] == "trace_item":
+                code = found["item"]["item_code"]
+            else:
+                code = found["location"]["location_code"]
+            return Response(qr_svg(code), mimetype="image/svg+xml")
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/start")
+    def api_start_experiment_step(experiment_id, step_code):
+        body = dict(request.get_json(silent=True) or {})
+        body["device_capture"] = _device_capture()
+        try:
+            return jsonify(
+                r201.start_step(
+                    experiment_id,
+                    step_code,
+                    body.get("row_version"),
+                    body,
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post(
+        "/api/experiments/<int:experiment_id>/steps/"
+        "<step_code>/completion-preview"
+    )
+    def api_preview_experiment_step(experiment_id, step_code):
+        body = dict(request.get_json(silent=True) or {})
+        body["device_capture"] = _device_capture()
+        try:
+            return jsonify(
+                r201.preview_step_completion(
+                    experiment_id,
+                    step_code,
+                    body.get("row_version"),
+                    body.get("result") or {},
+                    body,
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/complete")
+    def api_complete_experiment_step(experiment_id, step_code):
+        body = dict(request.get_json(silent=True) or {})
+        body["device_capture"] = _device_capture()
+        try:
+            return jsonify(
+                r201.complete_step(
+                    experiment_id,
+                    step_code,
+                    body.get("row_version"),
+                    body.get("result") or {},
+                    body,
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/measurements/viscosity")
+    def api_record_viscosity(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        body["device_capture"] = _device_capture()
+        try:
+            return jsonify(
+                r201.record_viscosity(
+                    experiment_id, body
+                )
+            ), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/data-sources")
+    def api_add_experiment_data_source(experiment_id):
+        try:
+            created = r201.add_data_source(
+                experiment_id, request.get_json(silent=True) or {}
+            )
+            return jsonify(created), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/deviations")
+    def api_open_experiment_deviation(experiment_id):
+        try:
+            created = r201.open_deviation(
+                experiment_id, request.get_json(silent=True) or {}
+            )
+            return jsonify(created), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post(
+        "/api/experiments/<int:experiment_id>/deviations/"
+        "<int:deviation_id>/resolve"
+    )
+    def api_resolve_experiment_deviation(experiment_id, deviation_id):
+        try:
+            resolved = r201.resolve_deviation(
+                experiment_id,
+                deviation_id,
+                request.get_json(silent=True) or {},
+            )
+            return jsonify(resolved)
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/submit")
+    def api_submit_experiment(experiment_id):
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                r201.submit(
+                    experiment_id,
+                    body.get("row_version"),
+                    str(body.get("actor", "")),
+                    str(body.get("client_event_id", "")),
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/review")
+    def api_review_experiment(experiment_id):
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                r201.review(
+                    experiment_id,
+                    body.get("row_version"),
+                    str(body.get("action", "")),
+                    str(body.get("reviewer", "")),
+                    str(body.get("client_event_id", "")),
+                    body.get("disposition"),
+                )
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/evaluate-telemetry")
+    def api_evaluate_experiment_telemetry(experiment_id):
+        try:
+            return jsonify(r201.evaluate_telemetry(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/experiments/<int:experiment_id>/stream")
+    def api_experiment_stream(experiment_id):
+        try:
+            detail = _experiment_detail(experiment_id)
+        except R201Error as exc:
+            return _r201_error(exc)
+        payload = {
+            "experiment": detail["experiment"],
+            "endpoint_ready": detail["endpoint_ready"],
+            "available_devices": detail["available_devices"],
+            "process_status": detail["process_status"],
+            "temperature_series": detail["temperature_series"],
+            "temperature_checkpoints": detail["temperature_checkpoints"],
+            "reached_temperature": detail["reached_temperature"],
+            "telemetry_gaps": detail["telemetry_gaps"],
+            "telemetry_integrity_status": detail["telemetry_integrity_status"],
+        }
+        body = (
+            "retry: 1000\n"
+            "event: snapshot\n"
+            f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+        )
+        return Response(body, mimetype="text/event-stream")
+
+    @app.get("/api/experiments/<int:experiment_id>/report.pdf")
+    def api_experiment_report(experiment_id):
+        try:
+            pdf = _build_experiment_pdf(_experiment_detail(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+        return Response(
+            pdf,
+            mimetype="application/pdf",
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=r201_experiment_{experiment_id}.pdf"
+                )
+            },
+        )
 
     @app.get("/api/status")
     def api_status():
@@ -215,6 +1320,10 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                             "alias": dc.alias if dc else "", "type": dc.type if dc else "",
                             "latest": _snap_to_dict(snap)})
         return jsonify({"devices": devices})
+
+    @app.get("/api/time")
+    def api_time():
+        return jsonify({"server_ms": int(time.time() * 1000)})
 
     @app.get("/api/runs")
     def api_runs():
@@ -458,14 +1567,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                 "avg_humid_rh": None,
             })
         metrics = snap.metrics or {}
-        channels_data = metrics.get("channels", [])
-        channels = []
-        for i, ch in enumerate(channels_data):
-            channels.append({
-                "channel": i + 1,
-                "temp_c": ch.get("temp_c"),
-                "humid_rh": ch.get("humid_rh"),
-            })
+        channels = _whd_channels(metrics)
         return jsonify({
             "device_id": device_id,
             "device_name": dc.name,
@@ -634,11 +1736,8 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
         if not dc or dc.type != "whd46":
             return jsonify({"error": "device not found or not a whd46 sensor"}), 404
 
-        adapter = engine._get_adapter(device_id)
-        if adapter is None and hasattr(engine, '_extra_adapters'):
-            adapter = engine._extra_adapters.get(device_id)
-
-        if adapter is None or not adapter.is_connected:
+        snap = engine.latest().get(device_id)
+        if snap is None or snap.state == "offline":
             return jsonify({
                 "device_id": device_id,
                 "device_name": dc.name,
@@ -646,60 +1745,18 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                 "state": "offline",
                 "channels": [],
             })
-
-        try:
-            data = adapter.read_channels()
-            channels = data.get("channels", [])
-            
-            if len(channels) == 0:
-                return jsonify({
-                    "device_id": device_id,
-                    "device_name": dc.name,
-                    "device_alias": dc.alias,
-                    "state": "error",
-                    "error": "未读取到通道数据",
-                    "channels": [],
-                })
-            
-            import json as _json
-            avg_temp = data.get("avg_temp_c", 0)
-            avg_humid = data.get("avg_humid_rh", 0)
-            
-            repo.add_sample(
-                run_id=None,
-                device_id=device_id,
-                ts_ms=int(time.time() * 1000),
-                state="running",
-                flow_rate=None,
-                delivered_volume=None,
-                temp_c=avg_temp,
-                metrics_json=_json.dumps({
-                    "channels": channels,
-                    "ch1_temp_c": channels[0].get("temp_c"),
-                    "ch1_humid_rh": channels[0].get("humid_rh"),
-                    "ch2_temp_c": channels[1].get("temp_c"),
-                    "ch2_humid_rh": channels[1].get("humid_rh"),
-                    "ch3_temp_c": channels[2].get("temp_c"),
-                    "ch3_humid_rh": channels[2].get("humid_rh"),
-                })
-            )
-            
-            return jsonify({
-                "device_id": device_id,
-                "device_name": dc.name,
-                "device_alias": dc.alias,
-                "state": "running",
-                "channels": channels,
-            })
-        except Exception as e:
-            return jsonify({
-                "device_id": device_id,
-                "device_name": dc.name,
-                "device_alias": dc.alias,
-                "state": "error",
-                "error": str(e),
-                "channels": [],
-            })
+        metrics = snap.metrics or {}
+        channels = _whd_channels(metrics)
+        return jsonify({
+            "device_id": device_id,
+            "device_name": dc.name,
+            "device_alias": dc.alias,
+            "state": snap.state,
+            "timestamp": snap.timestamp,
+            "avg_temp_c": snap.temp_c,
+            "avg_humid_rh": metrics.get("avg_humid_rh"),
+            "channels": channels,
+        })
 
     @app.get("/api/devices/<int:device_id>/export-csv")
     def device_export_csv(device_id):

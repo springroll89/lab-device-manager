@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh">
-<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>设备采集管理台</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" href="data:,"><title>设备采集管理台</title>
 <style>
  body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;background:#0f1115;color:#e6e6e6}
  header{
@@ -39,8 +39,10 @@
  button:hover{background:#2f3540}
  input,select{background:#1a1d24;border:1px solid #333;color:#e6e6e6;border-radius:6px;padding:5px 10px;outline:none}
  input:focus,select:focus{border-color:#4a5568}
-</style><!-- cache_bust=1783485148 --></head>
-<body>
+</style><!-- cache_bust=1783485148 -->
+<link rel="stylesheet" href="/static/puricore-theme.css">
+</head>
+<body class="page-dashboard">
 <header>
   <div class="brand">
     <img src="/static/logo.png" alt="Puricore" class="logo">
@@ -49,7 +51,10 @@
       <div class="brand-sub">PURiCORE · Ceramic Membrane Technology</div>
     </div>
   </div>
-  <div class="env-badge">本地实验室</div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/experiments" style="color:#bcebdd;text-decoration:none;border:1px solid rgba(61,220,132,.35);padding:7px 12px;border-radius:9px;background:rgba(61,220,132,.08)">R-201 实验执行</a>
+    <div class="env-badge">本地实验室</div>
+  </div>
 </header>
 <h2>实时状态</h2>
 <div id="devices" class="cards"></div>

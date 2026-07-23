@@ -1,0 +1,357 @@
+import json
+import time
+
+from lab_device_manager.db.repository import Repository
+from lab_device_manager.instruments.base import StatusSnapshot
+from lab_device_manager.runtime.types import DeviceConfig
+from lab_device_manager.web.app import create_app
+
+
+class StaticEngine:
+    def __init__(self, latest, dmap):
+        self._latest = latest
+        self._dmap = dmap
+
+    def latest(self):
+        return dict(self._latest)
+
+    def device_map(self):
+        return dict(self._dmap)
+
+
+def _app():
+    repo = Repository(":memory:")
+    did = repo.upsert_device("pump-1", "tyd02", "注射泵")
+    snap = StatusSnapshot(
+        timestamp=time.time(),
+        state="running",
+        work_mode="仅注入",
+        device_id="pump-1",
+        acc_volume=105,
+        acc_unit="mL",
+        temp_c=25,
+        metrics={"inject_rate": 0.5, "target_volume": 5, "target_unit": "mL"},
+    )
+    engine = StaticEngine(
+        {did: snap},
+        {did: DeviceConfig(name="pump-1", type="tyd02", alias="注射泵")},
+    )
+    return create_app(engine, repo, secret_key="test-secret"), repo, did
+
+
+CREATE = {
+    "batch_id": "20260723-AEM-01",
+    "membrane_system": "AEM",
+    "recipe_no": "R-AEM-001",
+    "recipe_version": "V1",
+    "sop_code": "SOP-SOL-GEL-CEM-AEM-01",
+    "sop_version": "V0.2",
+    "target_viscosity_min_mpas": 2.5,
+    "target_viscosity_max_mpas": 10,
+    "operator": "张三",
+    "reviewer": "李四",
+    "spec_snapshot": {},
+}
+
+
+def test_experiments_page_and_static_script_are_served():
+    app, _, _ = _app()
+    client = app.test_client()
+    page = client.get("/experiments")
+    assert page.status_code == 200
+    assert b"experiment.js" in page.data
+    script = client.get("/static/experiment.js")
+    assert script.status_code == 200
+    assert b"STEP_DRAFT_PREFIX" in script.data
+    assert b"saveStepDraft(previousForm.dataset.stepCode, previousForm)" in script.data
+    assert b"restoreStepDraft(step, form)" in script.data
+    assert b"const form = event.currentTarget" in script.data
+    assert b"const viscosityForm = event.currentTarget" in script.data
+    assert b"viscosityForm.reset()" in script.data
+    assert b"event.currentTarget.reset()" not in script.data
+    assert b"completion-preview" in script.data
+    assert b"deviceReadingIsFresh" in script.data
+    assert "设备离线？人工补录".encode() in page.data
+    assert "操作与数据时间轴".encode() in page.data
+    assert b"MATERIAL_PRESETS" in script.data
+    assert b"EVENT_LABELS" in script.data
+    assert b'createStatus' in page.data
+    assert b'tracePanel' in page.data
+    assert b'intermediateTraceButton' in page.data
+    assert b'retrieveTraceButton' in page.data
+    assert b'init().catch' in script.data
+    assert b"bindingForm" not in page.data
+    assert b'input id="operator"' not in page.data
+    assert b'input id="reviewer"' not in page.data
+
+
+def test_create_list_and_get_experiment_api():
+    app, _, _ = _app()
+    client = app.test_client()
+    created = client.post("/api/experiments", json=CREATE)
+    assert created.status_code == 201
+    data = created.get_json()
+    assert data["batch_id"] == "20260723-AEM-01"
+    assert data["downstream_route_variant"] == "AEM_WITHOUT_F801"
+    assert client.get("/api/experiments").get_json()[0]["id"] == data["id"]
+    detail = client.get(f"/api/experiments/{data['id']}").get_json()
+    assert detail["experiment"]["batch_id"] == "20260723-AEM-01"
+    assert detail["available_devices"][0]["type"] == "tyd02"
+
+
+def test_next_batch_id_and_session_operator_api():
+    app, _, _ = _app()
+    client = app.test_client()
+
+    assert client.get("/api/session").get_json() == {
+        "authenticated": False,
+        "operator": "本机操作员",
+        "password_required": False,
+    }
+    first = client.get(
+        "/api/experiments/next-batch-id"
+        "?membrane_system=AEM&date=20260723"
+    )
+    assert first.status_code == 200
+    assert first.get_json()["batch_id"] == "20260723-AEM-01"
+
+    assert client.post("/api/experiments", json=CREATE).status_code == 201
+    second = client.get(
+        "/api/experiments/next-batch-id"
+        "?membrane_system=AEM&date=20260723"
+    )
+    assert second.get_json()["batch_id"] == "20260723-AEM-02"
+
+
+def test_traceability_api_prints_and_tracks_intermediate_lifecycle():
+    app, _, _ = _app()
+    client = app.test_client()
+    exp = client.post("/api/experiments", json=CREATE).get_json()
+
+    location = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "FRIDGE-01-A2",
+            "display_name": "冰箱01 · A2",
+            "storage_condition": "4℃",
+            "actor": "张三",
+        },
+    )
+    assert location.status_code == 201
+
+    created = client.post(
+        f"/api/experiments/{exp['id']}/trace-items",
+        json={
+            "item_type": "intermediate",
+            "display_name": "湿化学中间溶胶",
+            "container_count": 1,
+            "actor": "张三",
+            "client_event_id": "web-trace-create-1",
+        },
+    )
+    assert created.status_code == 201
+    item = created.get_json()[0]
+    assert item["item_code"].endswith("-IP01-01")
+
+    stored = client.post(
+        f"/api/trace-items/{item['id']}/store",
+        json={
+            "location_code": "FRIDGE-01-A2",
+            "hold_hours": 24,
+            "actor": "张三",
+            "client_event_id": "web-trace-store-1",
+        },
+    )
+    assert stored.status_code == 200
+    assert stored.get_json()["status"] == "stored"
+
+    retrieved = client.post(
+        f"/api/trace-items/{item['id']}/retrieve",
+        json={
+            "actor": "张三",
+            "client_event_id": "web-trace-retrieve-1",
+        },
+    )
+    assert retrieved.status_code == 200
+    assert retrieved.get_json()["status"] == "active"
+
+    print_job = client.post(
+        f"/api/experiments/{exp['id']}/trace-labels",
+        json={
+            "item_ids": [item["id"]],
+            "reason": "initial",
+            "copies": 1,
+            "actor": "张三",
+            "client_event_id": "web-trace-print-1",
+        },
+    )
+    assert print_job.status_code == 201
+    print_url = print_job.get_json()["print_url"]
+    label = client.get(print_url)
+    assert label.status_code == 200
+    assert item["item_code"].encode() in label.data
+    assert "打印标签".encode() in label.data
+
+    traceability = client.get(
+        f"/api/experiments/{exp['id']}/traceability"
+    ).get_json()
+    assert traceability["items"][1]["events"][-1]["event_type"] == (
+        "label_print_requested"
+    )
+    assert len(traceability["print_jobs"]) == 1
+
+
+def test_storage_location_label_and_qr_are_printable():
+    app, _, _ = _app()
+    client = app.test_client()
+    location = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CABINET-02-B05",
+            "display_name": "样品柜02 · B05",
+            "storage_condition": "室温避光",
+            "actor": "张三",
+        },
+    ).get_json()
+    printed = client.post(
+        f"/api/storage-locations/{location['id']}/print",
+        json={
+            "actor": "张三",
+            "client_event_id": "location-print-1",
+            "copies": 1,
+        },
+    )
+    assert printed.status_code == 201
+    label = client.get(printed.get_json()["print_url"])
+    assert b"CABINET-02-B05" in label.data
+    assert b"height:48mm" in label.data
+    assert b"size:60mm 48mm" in label.data
+    assert b"min-height:8mm" in label.data
+
+    qr = client.get("/api/trace/qr.svg?code=CABINET-02-B05")
+    assert qr.status_code == 200
+    assert qr.mimetype == "image/svg+xml"
+    assert b"<svg" in qr.data
+
+
+def test_create_experiment_validates_input_and_duplicate_batch():
+    app, _, _ = _app()
+    client = app.test_client()
+    bad = client.post("/api/experiments", json={**CREATE, "membrane_system": "X"})
+    assert bad.status_code == 400
+    assert "membrane_system" in bad.get_json()["error"]
+    assert client.post("/api/experiments", json=CREATE).status_code == 201
+    duplicate = client.post("/api/experiments", json=CREATE)
+    assert duplicate.status_code == 409
+
+
+def test_create_experiment_retry_with_same_client_event_is_idempotent():
+    app, repo, _ = _app()
+    client = app.test_client()
+    payload = {
+        **CREATE,
+        "client_event_id": "create-offline-retry-1",
+        "occurred_at_client_ms": 1_000,
+        "client_clock_offset_ms": 0,
+        "clock_sync_status": "trusted",
+    }
+
+    first = client.post("/api/experiments", json=payload)
+    second = client.post("/api/experiments", json=payload)
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.get_json()["id"] == first.get_json()["id"]
+    assert len(repo.experiments.list_experiment_events(first.get_json()["id"])) == 1
+
+
+def test_step_api_is_idempotent_and_checks_version():
+    app, _, _ = _app()
+    client = app.test_client()
+    exp = client.post("/api/experiments", json=CREATE).get_json()
+    body = {
+        "row_version": exp["row_version"],
+        "client_event_id": "start-1",
+        "occurred_at_client_ms": 1000,
+        "clock_sync_status": "trusted",
+        "client_clock_offset_ms": 0,
+        "actor": "张三",
+    }
+    first = client.post(f"/api/experiments/{exp['id']}/steps/R201-01/start", json=body)
+    assert first.status_code == 200
+    second = client.post(f"/api/experiments/{exp['id']}/steps/R201-01/start", json=body)
+    assert second.status_code == 200
+    assert second.get_json()["experiment"]["row_version"] == first.get_json()["experiment"]["row_version"]
+    stale = client.post(
+        f"/api/experiments/{exp['id']}/steps/R201-01/complete",
+        json={
+            **body,
+            "client_event_id": "complete-1",
+            "result": {"environment_temp_c": 25, "environment_humidity_rh": 50, "device_checks": ["pump"]},
+        },
+    )
+    assert stale.status_code == 409
+
+
+def test_data_source_binding_and_sse_snapshot():
+    app, _, did = _app()
+    client = app.test_client()
+    exp = client.post("/api/experiments", json=CREATE).get_json()
+    binding_payload = {
+        "client_event_id": "bind-source-1",
+        "occurred_at_client_ms": 1000,
+        "client_clock_offset_ms": 0,
+        "clock_sync_status": "trusted",
+        "actor": "张三",
+        "device_id": did,
+        "device_role": "acid_pump",
+        "metric_key": "acc_volume",
+        "channel_selector": "1",
+        "linked_at_ms": 1000,
+        "link_method": "manual",
+    }
+    response = client.post(
+        f"/api/experiments/{exp['id']}/data-sources",
+        json=binding_payload,
+    )
+    assert response.status_code == 201
+    repeated = client.post(
+        f"/api/experiments/{exp['id']}/data-sources",
+        json=binding_payload,
+    )
+    assert repeated.status_code == 201
+    assert repeated.get_json()["id"] == response.get_json()["id"]
+    detail = client.get(f"/api/experiments/{exp['id']}").get_json()
+    assert len(detail["data_sources"]) == 1
+    assert detail["data_sources"][0]["device_role"] == "acid_pump"
+    assert detail["process_status"]["acid_pump"]["latest"]["acc_volume"] == 105
+    assert (
+        detail["process_status"]["acid_pump"]["latest"]["metrics"]["inject_rate"]
+        == 0.5
+    )
+    assert client.post(
+        f"/api/experiments/{exp['id']}/evaluate-telemetry"
+    ).status_code == 200
+    stream = client.get(f"/api/experiments/{exp['id']}/stream")
+    assert stream.status_code == 200
+    assert stream.content_type.startswith("text/event-stream")
+    body = stream.data.decode()
+    assert "event: snapshot" in body
+    assert '"acc_volume": 105' in body
+
+
+def test_experiment_report_pdf():
+    app, _, _ = _app()
+    client = app.test_client()
+    exp = client.post("/api/experiments", json=CREATE).get_json()
+    report = client.get(f"/api/experiments/{exp['id']}/report.pdf")
+    assert report.status_code == 200
+    assert report.content_type == "application/pdf"
+    assert report.data[:4] == b"%PDF"
+
+
+def test_missing_experiment_returns_404():
+    app, _, _ = _app()
+    client = app.test_client()
+    assert client.get("/api/experiments/999").status_code == 404
+    assert client.get("/experiments/999").status_code == 200

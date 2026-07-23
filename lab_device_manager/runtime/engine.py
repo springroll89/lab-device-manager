@@ -27,6 +27,8 @@ class Engine:
         self._samplers = []
         self._cleanups = []
         self._device_map = {}
+        self._adapters = {}
+        self._extra_adapters = {}
 
     def start(self):
         for dc in self.devices:
@@ -34,6 +36,7 @@ class Engine:
                 device_id = self.repo.upsert_device(dc.name, dc.type, dc.alias)
                 self._device_map[device_id] = dc
                 adapter, cleanup = self.adapter_factory(dc)
+                self._adapters[device_id] = adapter
                 self._cleanups.append(cleanup)
                 det = RunDetector(device_id, dc.channel, self.repo, on_event=self.on_event)
                 latest, lock = self._latest, self._latest_lock
@@ -75,13 +78,9 @@ class Engine:
 
     def _get_adapter(self, device_id: int):
         """获取指定设备的适配器"""
-        dc = self._device_map.get(device_id)
-        if dc is None:
+        if device_id not in self._device_map:
             return None
-        for sampler in self._samplers:
-            if sampler.adapter is not None:
-                return sampler.adapter
-        return None
+        return self._extra_adapters.get(device_id) or self._adapters.get(device_id)
 
 
 def serial_adapter_factory(dc: DeviceConfig) -> tuple:
