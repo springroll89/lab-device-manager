@@ -1247,6 +1247,39 @@ summary:focus-visible {
   border-top: 1px solid var(--pc-line-soft);
 }
 
+.page-experiment .device-binding-picker {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(300px, 0.9fr);
+  gap: 20px;
+  align-items: center;
+  padding: 18px;
+  background: rgba(48, 211, 174, 0.07);
+  border: 1px solid rgba(48, 211, 174, 0.3);
+  border-radius: 12px;
+}
+
+.page-experiment .device-binding-picker strong {
+  color: var(--pc-text);
+  font-size: 14px;
+}
+
+.page-experiment .device-binding-picker p {
+  margin: 5px 0 0;
+  color: var(--pc-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.page-experiment .device-binding-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.page-experiment .device-binding-actions select {
+  width: 100%;
+}
+
 .page-experiment .step-device-identity {
   display: flex;
   align-items: center;
@@ -1256,6 +1289,21 @@ summary:focus-visible {
 
 .page-experiment .step-device-identity > span {
   font-size: 11px;
+}
+
+.page-experiment .device-change {
+  min-height: 0;
+  padding: 4px 8px;
+  color: var(--pc-muted);
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--pc-line-soft);
+  border-radius: 999px;
+}
+
+.page-experiment .device-change:hover {
+  color: var(--pc-accent);
+  border-color: rgba(48, 211, 174, 0.45);
 }
 
 .page-experiment .step-live-metrics {
@@ -2033,6 +2081,15 @@ summary:focus-visible {
   .page-experiment .step-device-row {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+
+  .page-experiment .device-binding-picker,
+  .page-experiment .device-binding-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .page-experiment .device-binding-actions .secondary {
+    width: 100%;
   }
 
   .page-experiment .step-live-metrics {

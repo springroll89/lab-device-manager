@@ -27,12 +27,18 @@ from reportlab.platypus import (
 
 from lab_device_manager.config import _load_or_create_secret
 from lab_device_manager.db.models import fmt_ts_ms
-from lab_device_manager.experiments.service import R201Error, R201Service, STEP_LABELS
+from lab_device_manager.experiments.service import (
+    PROCESS_DEVICE_BINDINGS,
+    R201Error,
+    R201Service,
+    STEP_LABELS,
+)
 from lab_device_manager.web.trace_labels import (
     qr_svg,
     storage_location_label_html,
     trace_labels_html,
 )
+from lab_device_manager.web.whd46 import create_whd46_blueprint
 
 _MAX_RUN_LIMIT = 1000
 
@@ -48,19 +54,6 @@ def _snap_to_dict(snap):
         "alarm": snap.alarm, "ts_ms": int(snap.timestamp * 1000),
         "metrics": dict(snap.metrics) if snap.metrics else {},
     }
-
-
-def _whd_channels(metrics):
-    channels = []
-    for index, channel in enumerate((metrics or {}).get("channels", [])):
-        channels.append(
-            {
-                "channel": channel.get("channel", index + 1),
-                "temp_c": channel.get("temp_c", channel.get("temp")),
-                "humid_rh": channel.get("humid_rh", channel.get("humid")),
-            }
-        )
-    return channels
 
 
 def _run_to_dict(run):
@@ -665,6 +658,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
         SESSION_COOKIE_SAMESITE="Lax",
         PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
     )
+    app.register_blueprint(create_whd46_blueprint(engine, repo))
 
     def login_required(view):
         @functools.wraps(view)
@@ -682,9 +676,23 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     def _current_operator():
         return str(session.get("username") or "本机操作员").strip()
 
-    def _device_capture():
+    def _device_capture(experiment_id: int):
         captured_at_ms = int(time.time() * 1000)
         latest = engine.latest()
+        detail = r201.get_experiment(experiment_id)
+        role_candidates = {}
+        for binding in detail["data_sources"]:
+            if binding["unlinked_at_ms"] is not None:
+                continue
+            role_candidates.setdefault(
+                binding["device_role"],
+                set(),
+            ).add(binding["device_id"])
+        role_device_ids = {
+            role: next(iter(device_ids))
+            for role, device_ids in role_candidates.items()
+            if len(device_ids) == 1
+        }
         devices = []
         for device_id, config in engine.device_map().items():
             snapshot = latest.get(device_id)
@@ -716,44 +724,70 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             )
         return {
             "captured_at_server_ms": captured_at_ms,
+            "role_device_ids": role_device_ids,
             "devices": devices,
         }
 
     def _ensure_automatic_sources(experiment_id: int):
         detail = r201.get_experiment(experiment_id)
         experiment = detail["experiment"]
-        existing = {
-            (
-                item["device_id"],
-                item["device_role"],
-                item["metric_key"],
-            )
-            for item in detail["data_sources"]
-            if item["unlinked_at_ms"] is None
-        }
-        role_map = {
-            "tyd02": (("acid_pump", "acc_volume"),),
-            "stirrer": (
-                ("stirrer", "speed"),
-                ("reaction_temp", "temp_c"),
-            ),
-            "viscometer": (("viscometer", "viscosity_mPas"),),
-            "whd46": (("environment", "temp_c"),),
-        }
-        for device_id, config in engine.device_map().items():
-            for role, metric_key in role_map.get(config.type, ()):
-                key = (device_id, role, metric_key)
-                if key in existing:
+        active_by_role = {}
+        for item in detail["data_sources"]:
+            if item["unlinked_at_ms"] is None:
+                active_by_role.setdefault(
+                    item["device_role"],
+                    set(),
+                ).add(item["device_id"])
+        device_map = engine.device_map()
+        latest = engine.latest()
+        now_ms = int(time.time() * 1000)
+        configured_by_type = {}
+        fresh_by_type = {}
+        for device_id, config in device_map.items():
+            configured_by_type.setdefault(config.type, []).append(device_id)
+            snapshot = latest.get(device_id)
+            if (
+                snapshot is not None
+                and snapshot.state != "offline"
+                and now_ms - int(snapshot.timestamp * 1000) <= 15_000
+            ):
+                fresh_by_type.setdefault(config.type, []).append(device_id)
+
+        for device_type, role_metrics in PROCESS_DEVICE_BINDINGS.items():
+            roles = tuple(role_metrics)
+            bound_ids = {
+                device_id
+                for role in roles
+                for device_id in active_by_role.get(role, set())
+            }
+            if len(bound_ids) == 1:
+                selected_device_id = next(iter(bound_ids))
+            elif bound_ids:
+                continue
+            else:
+                fresh_candidates = fresh_by_type.get(device_type, [])
+                configured_candidates = configured_by_type.get(
+                    device_type,
+                    [],
+                )
+                if len(fresh_candidates) == 1:
+                    selected_device_id = fresh_candidates[0]
+                elif len(configured_candidates) == 1:
+                    selected_device_id = configured_candidates[0]
+                else:
+                    continue
+            for role, metric_key in role_metrics.items():
+                if active_by_role.get(role):
                     continue
                 r201.add_data_source(
                     experiment_id,
                     {
                         "client_event_id": (
-                            f"auto-bind-{experiment_id}-{device_id}-"
-                            f"{role}-{metric_key}"
+                            f"auto-bind-{experiment_id}-"
+                            f"{selected_device_id}-{role}-{metric_key}"
                         ),
                         "actor": experiment["operator"],
-                        "device_id": device_id,
+                        "device_id": selected_device_id,
                         "device_role": role,
                         "metric_key": metric_key,
                         "linked_at_ms": experiment["created_at_ms"],
@@ -762,7 +796,9 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                         "source_type": "derived",
                     },
                 )
-                existing.add(key)
+                active_by_role.setdefault(role, set()).add(
+                    selected_device_id
+                )
 
     @app.before_request
     def require_login():
@@ -857,12 +893,26 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                 and item["unlinked_at_ms"] is None
             ]
             if not bindings:
-                return {"bound": False}
-            binding = bindings[-1]
+                return {"bound": False, "ambiguous": False}
+            device_ids = {item["device_id"] for item in bindings}
+            if len(device_ids) != 1:
+                return {
+                    "bound": False,
+                    "ambiguous": True,
+                    "candidate_device_ids": sorted(device_ids),
+                    "bindings": bindings,
+                }
+            selected_id = next(iter(device_ids))
+            binding = next(
+                item
+                for item in reversed(bindings)
+                if item["device_id"] == selected_id
+            )
             device = device_by_id.get(binding["device_id"])
             latest_snapshot = device.get("latest") if device else None
             return {
                 "bound": True,
+                "ambiguous": False,
                 "binding": binding,
                 "device": (
                     {
@@ -1132,7 +1182,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/start")
     def api_start_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["device_capture"] = _device_capture()
+        body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
                 r201.start_step(
@@ -1151,7 +1201,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     )
     def api_preview_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["device_capture"] = _device_capture()
+        body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
                 r201.preview_step_completion(
@@ -1168,7 +1218,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/complete")
     def api_complete_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["device_capture"] = _device_capture()
+        body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
                 r201.complete_step(
@@ -1185,7 +1235,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/measurements/viscosity")
     def api_record_viscosity(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["device_capture"] = _device_capture()
+        body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
                 r201.record_viscosity(
@@ -1202,6 +1252,34 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                 experiment_id, request.get_json(silent=True) or {}
             )
             return jsonify(created), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/experiments/<int:experiment_id>/device-bindings")
+    def api_select_experiment_device(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        try:
+            device_id = int(body.get("device_id"))
+        except (TypeError, ValueError):
+            return _r201_error(R201Error("device_id is required"))
+        config = engine.device_map().get(device_id)
+        if config is None:
+            return _r201_error(R201Error("device not found", 404))
+        body["device_id"] = device_id
+        body["device_type"] = config.type
+        if login_password:
+            body["actor"] = _current_operator()
+        try:
+            selection = r201.select_process_device(
+                experiment_id,
+                body,
+            )
+            return jsonify(
+                {
+                    "selection": selection,
+                    "detail": _experiment_detail(experiment_id),
+                }
+            )
         except R201Error as exc:
             return _r201_error(exc)
 
@@ -1546,333 +1624,6 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             "latest": snap_dict,
             "metrics": snap_dict["metrics"] if snap_dict else {},
             "runs": [_run_to_dict(r) for r in runs],
-        })
-
-    @app.get("/api/devices/<int:device_id>/sensor-data")
-    def device_sensor_data(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a sensor"}), 404
-        latest = engine.latest()
-        snap = latest.get(device_id)
-        if not snap or snap.state == "offline":
-            return jsonify({
-                "device_id": device_id,
-                "device_name": dc.name,
-                "device_alias": dc.alias,
-                "state": "offline",
-                "channels": [],
-                "avg_temp_c": None,
-                "avg_humid_rh": None,
-            })
-        metrics = snap.metrics or {}
-        channels = _whd_channels(metrics)
-        return jsonify({
-            "device_id": device_id,
-            "device_name": dc.name,
-            "device_alias": dc.alias,
-            "state": snap.state,
-            "timestamp": snap.timestamp,
-            "channels": channels,
-            "avg_temp_c": snap.temp_c,
-            "avg_humid_rh": metrics.get("avg_humid_rh"),
-        })
-
-    @app.get("/api/devices/<int:device_id>/sensor-history")
-    def device_sensor_history(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a sensor"}), 404
-        def _int_param(key, default, min_val=0):
-            try:
-                return int(request.args.get(key, default))
-            except (TypeError, ValueError):
-                return default
-        limit = _int_param("limit", 100)
-        samples = repo.list_samples_for_device(device_id, limit=limit)
-        history = []
-        for s in samples:
-            metrics = {}
-            try:
-                if s.metrics_json:
-                    metrics = _json.loads(s.metrics_json)
-            except Exception:
-                pass
-            channels_data = metrics.get("channels", [])
-            channels = []
-            for i, ch in enumerate(channels_data):
-                channels.append({
-                    "channel": i + 1,
-                    "temp_c": ch.get("temp_c"),
-                    "humid_rh": ch.get("humid_rh"),
-                })
-            history.append({
-                "ts_ms": s.ts_ms,
-                "state": s.state,
-                "temp_c": s.temp_c,
-                "channels": channels,
-            })
-        return jsonify({
-            "device_id": device_id,
-            "device_name": dc.name,
-            "device_alias": dc.alias,
-            "history": history,
-        })
-
-    @app.get("/api/serial-ports")
-    def serial_ports():
-        try:
-            from lab_device_manager.instruments.whd46_33 import enum_serial_ports
-            ports = enum_serial_ports()
-            return jsonify({"ports": ports})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.get("/api/browse-directory")
-    def browse_directory():
-        import os
-        path = request.args.get('path', '')
-        try:
-            if not path:
-                if os.name == 'nt':
-                    drives = [f"{d}:\\" for d in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f"{d}:\\")]
-                    return jsonify({
-                        "current": "",
-                        "parent": "",
-                        "directories": drives
-                    })
-                else:
-                    return jsonify({
-                        "current": "/",
-                        "parent": "",
-                        "directories": [d for d in os.listdir('/') if os.path.isdir(os.path.join('/', d))]
-                    })
-            
-            if not os.path.isdir(path):
-                return jsonify({"error": "invalid path"}), 400
-            
-            parent = os.path.dirname(path)
-            if parent == path:
-                parent = ""
-            
-            directories = []
-            try:
-                for item in os.listdir(path):
-                    full_path = os.path.join(path, item)
-                    if os.path.isdir(full_path):
-                        directories.append(item)
-            except PermissionError:
-                pass
-            
-            directories.sort()
-            
-            return jsonify({
-                "current": path,
-                "parent": parent,
-                "directories": directories
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.post("/api/devices/<int:device_id>/connect")
-    def device_connect(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a whd46 sensor"}), 404
-
-        body = request.get_json(silent=True) or {}
-        port = body.get("port", "auto")
-
-        from lab_device_manager.instruments.whd46_33 import WHD46Adapter
-        adapter = engine._get_adapter(device_id)
-        if adapter is None:
-            adapter = WHD46Adapter(slave=dc.modbus_addr, baudrate=dc.baudrate, parity=dc.parity)
-            if not hasattr(engine, '_extra_adapters'):
-                engine._extra_adapters = {}
-            engine._extra_adapters[device_id] = adapter
-
-        if port == "auto":
-            result = adapter.auto_detect()
-        else:
-            result = adapter.connect(port)
-
-        if result["ok"]:
-            return jsonify({
-                "ok": True,
-                "port": adapter.connected_port,
-                "message": f"已连接到 {adapter.connected_port}"
-            })
-        else:
-            return jsonify({
-                "ok": False,
-                "error": result["error"],
-                "detail": result["detail"]
-            }), 400
-
-    @app.post("/api/devices/<int:device_id>/disconnect")
-    def device_disconnect(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a whd46 sensor"}), 404
-
-        adapter = engine._get_adapter(device_id)
-        if adapter is None and hasattr(engine, '_extra_adapters'):
-            adapter = engine._extra_adapters.get(device_id)
-
-        if adapter is None:
-            return jsonify({"error": "adapter not found"}), 500
-
-        adapter.close()
-        return jsonify({"ok": True, "message": "已断开连接"})
-
-    @app.get("/api/devices/<int:device_id>/realtime-data")
-    def device_realtime_data(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a whd46 sensor"}), 404
-
-        snap = engine.latest().get(device_id)
-        if snap is None or snap.state == "offline":
-            return jsonify({
-                "device_id": device_id,
-                "device_name": dc.name,
-                "device_alias": dc.alias,
-                "state": "offline",
-                "channels": [],
-            })
-        metrics = snap.metrics or {}
-        channels = _whd_channels(metrics)
-        return jsonify({
-            "device_id": device_id,
-            "device_name": dc.name,
-            "device_alias": dc.alias,
-            "state": snap.state,
-            "timestamp": snap.timestamp,
-            "avg_temp_c": snap.temp_c,
-            "avg_humid_rh": metrics.get("avg_humid_rh"),
-            "channels": channels,
-        })
-
-    @app.get("/api/devices/<int:device_id>/export-csv")
-    def device_export_csv(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a whd46 sensor"}), 404
-
-        save_path = request.args.get('save_path', '')
-        samples = repo.list_samples_for_device(device_id, limit=100000)
-
-        import io
-        import csv
-        import os
-        from datetime import datetime
-        
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "时间戳",
-            "CH1温度(℃)", "CH1湿度(%RH)",
-            "CH2温度(℃)", "CH2湿度(%RH)",
-            "CH3温度(℃)", "CH3湿度(%RH)",
-        ])
-
-        for s in samples:
-            metrics = {}
-            try:
-                if s.metrics_json:
-                    metrics = _json.loads(s.metrics_json)
-            except Exception:
-                pass
-            channels = metrics.get("channels", [])
-            row = [datetime.fromtimestamp(s.ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")]
-            for i in range(3):
-                ch = channels[i] if i < len(channels) else {}
-                t = ch.get("temp_c")
-                h = ch.get("humid_rh")
-                row.append(f"{t:.1f}" if t is not None else "")
-                row.append(f"{h:.1f}" if h is not None else "")
-            writer.writerow(row)
-
-        filename = f"WHD46_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        if save_path:
-            try:
-                os.makedirs(save_path, exist_ok=True)
-                full_path = os.path.join(save_path, filename)
-                with open(full_path, 'w', encoding='utf-8-sig', newline='') as f:
-                    f.write(output.getvalue())
-                return jsonify({
-                    "ok": True,
-                    "message": f"CSV文件已保存到: {full_path}",
-                    "filename": filename,
-                    "path": full_path
-                })
-            except Exception as e:
-                return jsonify({
-                    "ok": False,
-                    "error": f"保存文件失败: {str(e)}"
-                }), 500
-        else:
-            csv_content = '\ufeff' + output.getvalue()
-            response = app.make_response(csv_content)
-            response.headers["Content-Type"] = "text/csv; charset=utf-8"
-            response.headers["Content-Disposition"] = f"attachment; filename={filename}"
-            return response
-
-    @app.post("/api/devices/<int:device_id>/log-csv")
-    def device_log_csv(device_id):
-        dmap = engine.device_map()
-        dc = dmap.get(device_id)
-        if not dc or dc.type != "whd46":
-            return jsonify({"error": "device not found or not a whd46 sensor"}), 404
-
-        body = request.get_json(silent=True) or {}
-        save_path = body.get("save_path", "data")
-        data = body.get("data", {})
-
-        import os
-        import csv
-        from datetime import datetime
-
-        os.makedirs(save_path, exist_ok=True)
-        
-        filename = f"WHD46_data_{datetime.now().strftime('%Y%m%d')}.csv"
-        full_path = os.path.join(save_path, filename)
-        
-        file_exists = os.path.exists(full_path)
-        
-        with open(full_path, 'a', encoding='utf-8-sig', newline='') as f:
-            writer = csv.writer(f)
-            
-            if not file_exists:
-                writer.writerow([
-                    "时间戳",
-                    "CH1温度(℃)", "CH1湿度(%RH)",
-                    "CH2温度(℃)", "CH2湿度(%RH)",
-                    "CH3温度(℃)", "CH3湿度(%RH)",
-                ])
-            
-            ts_ms = data.get("ts_ms", datetime.now().timestamp() * 1000)
-            channels = data.get("channels", [])
-            row = [datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")]
-            for i in range(3):
-                ch = channels[i] if i < len(channels) else {}
-                t = ch.get("temp_c")
-                h = ch.get("humid_rh")
-                row.append(f"{t:.1f}" if t is not None else "")
-                row.append(f"{h:.1f}" if h is not None else "")
-            writer.writerow(row)
-
-        return jsonify({
-            "ok": True,
-            "filename": filename,
-            "path": full_path
         })
 
     return app

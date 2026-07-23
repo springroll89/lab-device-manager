@@ -169,6 +169,56 @@ def test_whd_realtime_data_reads_latest_snapshot_without_polling_or_writing():
     assert repo.list_samples_for_device(device_id) == []
 
 
+def test_whd_connect_hands_verified_port_to_managed_engine(monkeypatch):
+    repo = Repository(":memory:")
+    device_id = repo.upsert_device(
+        "whd-1",
+        "whd46",
+        alias="环境温湿度",
+    )
+
+    class ManagedEngine(StaticEngine):
+        def __init__(self):
+            super().__init__(
+                {},
+                {
+                    device_id: DeviceConfig(
+                        name="whd-1",
+                        type="whd46",
+                        alias="环境温湿度",
+                        serial_port="/dev/old",
+                        parity="NONE",
+                    )
+                },
+            )
+            self.reconnected = None
+
+        def reconnect_device(self, requested_id, port):
+            self.reconnected = (requested_id, port)
+            return {"ok": True, "port": port}
+
+    engine = ManagedEngine()
+    monkeypatch.setattr(
+        "lab_device_manager.web.whd46.probe_port",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "port": "/dev/new",
+            "error": "",
+            "detail": "",
+        },
+    )
+    app = create_app(engine, repo, secret_key="test-secret")
+
+    response = app.test_client().post(
+        f"/api/devices/{device_id}/connect",
+        json={"port": "/dev/new"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["port"] == "/dev/new"
+    assert engine.reconnected == (device_id, "/dev/new")
+
+
 def test_device_detail_filters_runs_by_device_id(tmp_path):
     """SECURITY: /api/devices/<id> must only return that device's runs — never
     another device's. (Regression: previously returned repo.list_runs for ALL

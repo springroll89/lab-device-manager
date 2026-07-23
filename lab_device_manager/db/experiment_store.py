@@ -994,6 +994,68 @@ class ExperimentStore:
             ).fetchone()
         return dict(row)
 
+    def replace_active_role_bindings(
+        self,
+        experiment_id: int,
+        *,
+        device_id: int,
+        role_metrics: dict[str, str],
+        linked_at_ms: int,
+        link_method: str,
+        client_event_id: str,
+        step_instance_id: Optional[int] = None,
+        event: Optional[dict] = None,
+    ) -> list[dict]:
+        """原子切换一个批次的过程设备，并保留旧绑定历史。"""
+        roles = tuple(role_metrics)
+        if not roles:
+            return []
+        placeholders = ",".join("?" for _ in roles)
+        with self.transaction() as conn:
+            conn.execute(
+                f"""UPDATE experiment_data_source_binding
+                    SET unlinked_at_ms=?
+                    WHERE experiment_id=?
+                      AND device_role IN ({placeholders})
+                      AND unlinked_at_ms IS NULL""",
+                (linked_at_ms, experiment_id, *roles),
+            )
+            binding_ids = []
+            for role, metric_key in role_metrics.items():
+                cursor = conn.execute(
+                    """INSERT INTO experiment_data_source_binding(
+                         experiment_id, step_instance_id, device_id, run_id,
+                         device_role, metric_key, channel_selector,
+                         linked_at_ms, unlinked_at_ms, link_method, confidence,
+                         client_event_id)
+                       VALUES(?,?,?,NULL,?,?,NULL,?,NULL,?,NULL,?)""",
+                    (
+                        experiment_id,
+                        step_instance_id,
+                        device_id,
+                        role,
+                        metric_key,
+                        linked_at_ms,
+                        link_method,
+                        f"{client_event_id}:{role}",
+                    ),
+                )
+                binding_ids.append(cursor.lastrowid)
+            if event is not None:
+                self.add_experiment_event(
+                    experiment_id,
+                    event,
+                    step_instance_id,
+                    connection=conn,
+                )
+            rows = conn.execute(
+                f"""SELECT * FROM experiment_data_source_binding
+                    WHERE id IN ({','.join('?' for _ in binding_ids)})
+                    ORDER BY id""",
+                tuple(binding_ids),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_data_source_binding_by_client_event(
         self, client_event_id: str
     ) -> Optional[dict]:
