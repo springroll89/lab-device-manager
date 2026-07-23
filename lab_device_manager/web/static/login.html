@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh">
-<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>登录 · 设备采集管理台</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" href="data:,"><title>登录 · 设备采集管理台</title>
 <style>
  *{box-sizing:border-box}
  html,body{margin:0;padding:0;height:100%;font-family:-apple-system,"PingFang SC",sans-serif}
@@ -74,47 +74,124 @@
    .left{display:none}
    .right{flex:none;width:100%}
  }
-</style></head>
-<body>
+</style>
+<link rel="stylesheet" href="/static/puricore-theme.css">
+</head>
+<body class="page-login">
 <div class="wrap">
   <div class="left">
     <img src="/static/logo.png" alt="Puricore">
   </div>
   <div class="right">
-    <form class="card" onsubmit="return doLogin()">
+    <form id="loginForm" class="card" novalidate>
       <img src="/static/logo.png" alt="Puricore" class="logo-small">
-      <h1>欢迎回来</h1>
-      <p>请输入密码登录设备采集管理台</p>
-      <div id="error" class="error">密码错误</div>
+      <h1>实验室登录</h1>
+      <p id="loginIntro">正在检查登录方式…</p>
+      <div id="loginStatus" class="login-status hidden" role="status" aria-live="polite"></div>
       <div class="field">
-        <label>密码</label>
-        <input type="password" id="password" placeholder="Password" autofocus>
+        <label for="username">账号</label>
+        <input type="text" id="username" placeholder="请输入姓名或账号" autocomplete="username" autofocus>
       </div>
-      <button type="submit" class="btn">登录</button>
-      <div class="hint">本地实验室 · 仅授权人员使用</div>
+      <div id="passwordField" class="field">
+        <label for="password">密码</label>
+        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
+      </div>
+      <button id="loginButton" type="submit" class="btn">登录</button>
+      <div class="hint">登录后，姓名会自动写入批次操作员和操作记录。</div>
     </form>
   </div>
 </div>
 <script>
-async function doLogin(){
+let passwordRequired = true;
+
+function setLoginStatus(message, type = "error") {
+  const status = document.getElementById("loginStatus");
+  status.textContent = message;
+  status.className = `login-status ${type}`;
+}
+
+function clearLoginStatus() {
+  const status = document.getElementById("loginStatus");
+  status.textContent = "";
+  status.className = "login-status hidden";
+}
+
+function safeNextPath() {
+  const requested = new URLSearchParams(location.search).get("next");
+  if (requested && requested.startsWith("/") && !requested.startsWith("//")) {
+    return requested;
+  }
+  return "/experiments";
+}
+
+async function loadAuthMode() {
+  const intro = document.getElementById("loginIntro");
+  const passwordField = document.getElementById("passwordField");
+  const password = document.getElementById("password");
+  const button = document.getElementById("loginButton");
+  try {
+    const response = await fetch("/api/auth-mode");
+    if (!response.ok) throw new Error();
+    const mode = await response.json();
+    passwordRequired = Boolean(mode.password_required);
+    passwordField.classList.toggle("hidden", !passwordRequired);
+    password.required = passwordRequired;
+    intro.textContent = passwordRequired
+      ? "请输入姓名和实验室通行密码。"
+      : "当前为本地身份模式，输入姓名即可开始。";
+    button.textContent = passwordRequired ? "登录" : "确认操作员";
+  } catch (_) {
+    passwordRequired = true;
+    intro.textContent = "暂时无法读取登录方式。";
+    setLoginStatus("登录服务连接失败，请刷新页面后重试。");
+  }
+}
+
+async function doLogin(event) {
+  event.preventDefault();
+  const username = document.getElementById("username").value.trim();
   const pwd = document.getElementById("password").value;
-  const err = document.getElementById("error");
+  const button = document.getElementById("loginButton");
+  clearLoginStatus();
+  if (!username) {
+    setLoginStatus("请输入姓名或账号。");
+    document.getElementById("username").focus();
+    return;
+  }
+  if (passwordRequired && !pwd) {
+    setLoginStatus("请输入密码。");
+    document.getElementById("password").focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "正在登录…";
   try {
     const r = await fetch("/login", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({password: pwd})
+      body:JSON.stringify({username, password: pwd})
     });
+    const data = await r.json().catch(() => ({}));
     if (r.ok) {
-      window.location.href = "/";
+      setLoginStatus(`登录成功，当前操作员：${data.operator || username}`, "success");
+      window.location.replace(safeNextPath());
     } else {
-      err.style.display = "block";
+      const message = data.error === "operator name is required"
+        ? "请输入姓名或账号。"
+        : data.error === "invalid password"
+          ? "密码不正确，请重新输入。"
+          : "登录失败，请重试。";
+      setLoginStatus(message);
     }
   } catch (e) {
-    err.textContent = "网络错误，请重试";
-    err.style.display = "block";
+    setLoginStatus("网络连接失败，请检查本地服务后重试。");
+  } finally {
+    button.disabled = false;
+    button.textContent = passwordRequired ? "登录" : "确认操作员";
   }
-  return false;
 }
+
+document.getElementById("loginForm").addEventListener("submit", doLogin);
+loadAuthMode();
 </script>
 </body></html>

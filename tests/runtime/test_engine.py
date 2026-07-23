@@ -55,3 +55,29 @@ def test_tolerates_unreachable_device():
     assert len(latest) == 2                       # both registered
     assert any(s.state == "offline" for s in latest.values())   # dead device offline
     assert len(repo.list_untagged_runs()) == 1    # live produced a run; dead produced none
+
+
+def test_get_adapter_returns_adapter_for_requested_device():
+    repo = Repository(":memory:")
+    devices = [
+        DeviceConfig(name="pump-1", type="tyd02"),
+        DeviceConfig(name="pump-2", type="tyd02"),
+    ]
+    adapters = {}
+
+    def factory(dc):
+        adapter = ScriptedAdapter([_snap("stopped")])
+        adapters[dc.name] = adapter
+        return adapter, (lambda: None)
+
+    eng = Engine(repo, devices, sample_interval_s=0.02, adapter_factory=factory)
+    eng.start()
+    try:
+        device_ids = {
+            config.name: device_id
+            for device_id, config in eng.device_map().items()
+        }
+        assert eng._get_adapter(device_ids["pump-1"]) is adapters["pump-1"]
+        assert eng._get_adapter(device_ids["pump-2"]) is adapters["pump-2"]
+    finally:
+        eng.stop()

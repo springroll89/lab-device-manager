@@ -1,6 +1,115 @@
 const $ = (id) => document.getElementById(id);
 const fmtDur = (ms) => (ms == null) ? "-" : (ms >= 60000 ? (ms/60000).toFixed(1)+" 分" : (ms/1000).toFixed(0)+" 秒");
 const fmtTs = (ms) => (ms == null) ? "-" : new Date(ms).toLocaleString();
+const STATE_LABELS = {
+  running: "运行中",
+  stopped: "已停止",
+  paused: "已暂停",
+  alarm: "异常",
+  offline: "离线",
+};
+
+function fmtValue(value, unit, decimals = 1) {
+  const number = Number(value);
+  if (value == null || value === "" || !Number.isFinite(number)) return "—";
+  return `${number.toFixed(decimals)}${unit ? ` ${unit}` : ""}`;
+}
+
+function average(values) {
+  const valid = values.map(Number).filter(Number.isFinite);
+  if (!valid.length) return null;
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+function dashboardMetrics(dev, latest, metrics) {
+  if (dev.type === "stirrer") {
+    return [
+      ["实际温度", fmtValue(latest.temp_c, "℃")],
+      ["实际转速", fmtValue(metrics.speed ?? latest.flow_rpm, "rpm", 0)],
+      ["设定温度", fmtValue(metrics.set_temp, "℃")],
+      ["设定转速", fmtValue(metrics.set_speed, "rpm", 0)],
+    ];
+  }
+  if (dev.type === "tyd02") {
+    return [
+      ["加酸速率", fmtValue(metrics.inject_rate, "mL/min", 2)],
+      ["累计加入量", fmtValue(latest.acc_volume, latest.acc_unit || "mL", 2)],
+      ["目标加入量", fmtValue(metrics.target_volume, metrics.target_unit || "mL", 2)],
+      ["运行进度", fmtValue(latest.progress_pct, "%")],
+    ];
+  }
+  if (dev.type === "viscometer") {
+    return [
+      ["粘度", fmtValue(metrics.viscosity_mPas, "mPa·s", 2)],
+      ["样品温度", fmtValue(latest.temp_c, "℃")],
+      ["扭矩", fmtValue(metrics.torque_pct, "%")],
+      ["剪切速率", fmtValue(metrics.shear_rate_1s, "1/s")],
+    ];
+  }
+  if (dev.type === "whd46") {
+    const channels = metrics.channels || [];
+    const temperatures = channels.length
+      ? channels.map(channel => channel.temp)
+      : [metrics.ch1_temp_c, metrics.ch2_temp_c, metrics.ch3_temp_c];
+    const humidity = channels.length
+      ? channels.map(channel => channel.humid)
+      : [metrics.ch1_humid_rh, metrics.ch2_humid_rh, metrics.ch3_humid_rh];
+    return [
+      ["平均温度", fmtValue(latest.temp_c ?? average(temperatures), "℃")],
+      ["平均湿度", fmtValue(metrics.avg_humid_rh ?? average(humidity), "%RH")],
+      ["1 通道温度", fmtValue(temperatures[0], "℃")],
+      ["1 通道湿度", fmtValue(humidity[0], "%RH")],
+    ];
+  }
+  return [
+    ["工作模式", latest.work_mode || "—"],
+    ["温度", fmtValue(latest.temp_c, "℃")],
+    ["累计量", fmtValue(latest.acc_volume, latest.acc_unit || "")],
+    ["进度", fmtValue(latest.progress_pct, "%")],
+  ];
+}
+
+function buildDeviceCard(dev, latest, metrics) {
+  const card = document.createElement("div");
+  card.className = `card${dev.type === "whd46" ? " sensor-card" : ""}`;
+  card.dataset.deviceId = dev.id;
+  card.onclick = () => {
+    location.href = dev.type === "whd46" ? `/sensor/${dev.id}` : `/device/${dev.id}`;
+  };
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = dev.alias || dev.name;
+  const state = document.createElement("div");
+  state.className = `card-state s-${latest.state || "offline"}`;
+  state.textContent = STATE_LABELS[latest.state] || latest.state || STATE_LABELS.offline;
+  head.append(name, state);
+
+  const metricGrid = document.createElement("div");
+  metricGrid.className = "card-metrics";
+  for (const [label, value] of dashboardMetrics(dev, latest, metrics)) {
+    const item = document.createElement("div");
+    item.className = "card-metric";
+    const key = document.createElement("span");
+    key.textContent = label;
+    const reading = document.createElement("strong");
+    reading.textContent = value;
+    item.append(key, reading);
+    metricGrid.appendChild(item);
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "card-footer";
+  const mode = document.createElement("span");
+  mode.textContent = latest.work_mode || dev.type;
+  const updated = document.createElement("span");
+  updated.textContent = `更新 ${fmtTs(latest.ts_ms)}`;
+  footer.append(mode, updated);
+  card.append(head, metricGrid, footer);
+  return card;
+}
 
 async function pollStatus() {
   let d;
@@ -10,113 +119,7 @@ async function pollStatus() {
   for (const dev of (d.devices || [])) {
     const L = dev.latest || {};
     const M = L.metrics || {};
-    
-    if (dev.type === "whd46") {
-      const card = document.createElement("div");
-      card.className = "card sensor-card";
-      card.dataset.deviceId = dev.id;
-      card.onclick = () => { location.href = "/sensor/" + dev.id; };
-      
-      const name = document.createElement("div");
-      name.className = "name";
-      name.textContent = dev.alias || dev.name;
-      
-      const st = document.createElement("div");
-      st.className = "v s-" + (L.state || "offline");
-      st.textContent = L.state || "offline";
-      
-      const channels = M.channels || [];
-      const ch1 = channels[0] || {};
-      const ch2 = channels[1] || {};
-      const ch3 = channels[2] || {};
-      
-      const temp = document.createElement("div");
-      temp.className = "k";
-      temp.textContent = "CH1 " + (ch1.temp != null ? ch1.temp.toFixed(1) + "℃" : "-") + 
-        " / CH2 " + (ch2.temp != null ? ch2.temp.toFixed(1) + "℃" : "-") +
-        " / CH3 " + (ch3.temp != null ? ch3.temp.toFixed(1) + "℃" : "-");
-      
-      const humid = document.createElement("div");
-      humid.className = "k";
-      humid.textContent = "CH1 " + (ch1.humid != null ? ch1.humid.toFixed(1) + "%RH" : "-") + 
-        " / CH2 " + (ch2.humid != null ? ch2.humid.toFixed(1) + "%RH" : "-") +
-        " / CH3 " + (ch3.humid != null ? ch3.humid.toFixed(1) + "%RH" : "-");
-      
-      const rtime = document.createElement("div");
-      rtime.className = "k";
-      rtime.textContent = "更新 " + fmtTs(L.ts_ms);
-      
-      card.appendChild(name);
-      card.appendChild(st);
-      card.appendChild(temp);
-      card.appendChild(humid);
-      card.appendChild(rtime);
-      box.appendChild(card);
-    } else {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.dataset.deviceId = dev.id;
-      card.onclick = () => { location.href = "/device/" + dev.id; };
-      
-      const name = document.createElement("div");
-      name.className = "name";
-      name.textContent = dev.alias || dev.name;
-      
-      const st = document.createElement("div");
-      st.className = "v s-" + (L.state || "offline");
-      st.textContent = L.state || "offline";
-      
-      const flow = document.createElement("div");
-      flow.className = "v";
-      flow.textContent = (L.flow_rpm == null ? "-" : (+L.flow_rpm).toFixed(2)) + " rpm";
-      
-      const running = (L.state === "running" || L.state === "paused");
-      const vol = document.createElement("div");
-      vol.className = "v";
-      if (running) {
-        let cur = "-", u = M.target_unit || "";
-        if (M.target_volume != null && L.remaining_volume != null) {
-          cur = (M.target_volume - L.remaining_volume).toFixed(3);
-        } else if (L.consumed_volume != null) {
-          cur = L.consumed_volume;
-          u = L.consumed_unit || u;
-        }
-        const tgt = (M.target_volume == null ? "-" : M.target_volume);
-        vol.textContent = "本次 " + cur + " / " + tgt + " " + u;
-      } else {
-        vol.textContent = "累计 " + (L.acc_volume == null ? "-" : L.acc_volume) + " " + (L.acc_unit || "");
-      }
-      
-      const prog = document.createElement("div");
-      prog.className = "k";
-      prog.textContent = "进度 " + (L.progress_pct == null ? "-" : (+L.progress_pct).toFixed(1) + "%");
-      
-      const temp = document.createElement("div");
-      temp.className = "k";
-      temp.textContent = "温度 " + (L.temp_c == null ? "-" : L.temp_c) + " ℃";
-      
-      const cfg = document.createElement("div");
-      cfg.className = "cfg";
-      const cfgParts = [];
-      if (L.work_mode) cfgParts.push(L.work_mode);
-      if (M.syringe_name != null) cfgParts.push("注射器 " + M.syringe_name);
-      if (M.step_length_ul_per_step != null) cfgParts.push(M.step_length_ul_per_step.toFixed(3) + " μL/步");
-      cfg.textContent = cfgParts.join(" · ");
-      
-      const rtime = document.createElement("div");
-      rtime.className = "k";
-      rtime.textContent = "读数时刻 " + fmtTs(L.ts_ms);
-      
-      card.appendChild(name);
-      card.appendChild(st);
-      card.appendChild(flow);
-      card.appendChild(vol);
-      card.appendChild(prog);
-      card.appendChild(temp);
-      card.appendChild(cfg);
-      card.appendChild(rtime);
-      box.appendChild(card);
-    }
+    box.appendChild(buildDeviceCard(dev, L, M));
   }
 }
 
