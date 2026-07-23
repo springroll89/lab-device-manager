@@ -124,6 +124,7 @@ const EVENT_LABELS = {
   step_started:"开始步骤",
   step_completed:"完成步骤",
   data_source_bound:"连接数据源",
+  process_device_selected:"选择本批设备",
   measurement_recorded:"记录测量",
   viscosity_recorded:"记录粘度读数",
   deviation_opened:"记录偏差",
@@ -168,6 +169,13 @@ const DEVICE_TYPE_LABELS = {
   whd46:"WHD46 温湿度控制器"
 };
 
+const PROCESS_ROLE_BY_DEVICE_TYPE = {
+  tyd02:"acid_pump",
+  stirrer:"stirrer",
+  viscometer:"viscometer",
+  whd46:"environment"
+};
+
 let state = null;
 let currentOperator = "本机操作员";
 let nextBatchId = "";
@@ -176,6 +184,8 @@ let clockStatus = "unknown";
 let toastTimer = null;
 let flushingOutbox = false;
 let liveConnecting = false;
+const openDevicePickers = new Set();
+const pendingDeviceSelections = new Map();
 const OUTBOX_KEY = "r201-event-outbox-v1";
 const STEP_DRAFT_PREFIX = "r201-step-draft-v1";
 
@@ -1157,7 +1167,7 @@ function renderCurrentStep() {
   hint.className = "hint";
   hint.textContent = STEP_GUIDES[step] || "本批次当前没有待执行步骤。";
   box.append(code, name, hint);
-  renderStepDeviceSurface(box, step);
+  const missingDeviceTypes = renderStepDeviceSurface(box, step);
 
   const active = state.active_step;
   if (step === "R201-80") {
@@ -1195,6 +1205,10 @@ function renderCurrentStep() {
     const button = document.createElement("button");
     button.className = "primary";
     button.textContent = STEP_ACTIONS[step]?.start || "开始并打标";
+    button.disabled = missingDeviceTypes.length > 0;
+    if (missingDeviceTypes.length) {
+      button.title = "请先选择本批次使用的设备";
+    }
     button.onclick = startCurrentStep;
     box.appendChild(button);
     return;
@@ -1229,13 +1243,119 @@ function renderCurrentStep() {
   form.onsubmit = completeCurrentStep;
   box.appendChild(form);
   restoreStepDraft(step, form);
+  if (missingDeviceTypes.length) {
+    form.dataset.deviceBindingMissing = "true";
+    form.querySelectorAll('button[type="submit"]').forEach(button => {
+      button.disabled = true;
+      button.title = "请先选择本批次使用的设备";
+    });
+  }
   form.addEventListener("input", () => saveStepDraft(step, form));
   form.addEventListener("change", () => saveStepDraft(step, form));
 }
 
+function devicesOfType(type) {
+  return (state.available_devices || []).filter(item => item.type === type);
+}
+
+function selectedDeviceForType(type) {
+  const role = PROCESS_ROLE_BY_DEVICE_TYPE[type];
+  const process = state.process_status?.[role];
+  const selectedId = process?.bound
+    ? (process.device?.id ?? process.binding?.device_id)
+    : null;
+  const candidates = devicesOfType(type);
+  if (selectedId != null) {
+    return candidates.find(item => Number(item.id) === Number(selectedId)) || null;
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function missingDeviceBindings(step) {
+  return (STEP_DEVICE_TYPES[step] || []).filter(type => {
+    const candidates = devicesOfType(type);
+    return candidates.length > 1 && !selectedDeviceForType(type);
+  });
+}
+
+function renderDevicePicker(parent, type, candidates, selectedDevice) {
+  const picker = document.createElement("div");
+  picker.className = "device-binding-picker";
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = `选择本批使用的${DEVICE_TYPE_LABELS[type] || "设备"}`;
+  const note = document.createElement("p");
+  note.textContent = selectedDevice
+    ? "如现场更换设备，请重新选择；后续数据将切换到新设备。"
+    : `系统检测到 ${candidates.length} 台，请选择现场正在使用的设备。每个批次只需选择一次。`;
+  copy.append(title, note);
+
+  const actions = document.createElement("div");
+  actions.className = "device-binding-actions";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", `选择${DEVICE_TYPE_LABELS[type] || "设备"}`);
+  const prompt = document.createElement("option");
+  prompt.value = "";
+  prompt.textContent = "请选择现场设备";
+  select.appendChild(prompt);
+  [...candidates]
+    .sort((left, right) => (
+      Number(deviceReadingIsFresh(right)) - Number(deviceReadingIsFresh(left))
+    ))
+    .forEach(device => {
+      const option = document.createElement("option");
+      option.value = String(device.id);
+      option.textContent = `${device.alias || device.name} · ${deviceReadingIsFresh(device) ? "在线" : "离线"}`;
+      option.selected = Number(device.id) === Number(
+        pendingDeviceSelections.get(type) ?? selectedDevice?.id
+      );
+      select.appendChild(option);
+    });
+  const bind = document.createElement("button");
+  bind.type = "button";
+  bind.className = "secondary";
+  bind.textContent = selectedDevice ? "确认更换" : "绑定本批次";
+  bind.disabled = !select.value;
+  select.onchange = () => {
+    if (select.value) {
+      pendingDeviceSelections.set(type, Number(select.value));
+    } else {
+      pendingDeviceSelections.delete(type);
+    }
+    bind.disabled = !select.value;
+  };
+  bind.onclick = async () => {
+    bind.disabled = true;
+    await selectProcessDevice(Number(select.value), type);
+  };
+  actions.append(select, bind);
+  picker.append(copy, actions);
+  parent.appendChild(picker);
+}
+
+async function selectProcessDevice(deviceId, type) {
+  try {
+    await mutate(
+      `/api/experiments/${state.experiment.id}/device-bindings`,
+      {
+        device_id:deviceId,
+        selected_at_ms:Date.now(),
+        ...eventPayload(state.experiment.operator, `select-${type}`)
+      }
+    );
+    openDevicePickers.delete(type);
+    pendingDeviceSelections.delete(type);
+    toast(`已绑定本批次${DEVICE_TYPE_LABELS[type] || "设备"}。`);
+    await loadDetail();
+  } catch (error) {
+    toast(error.message, true);
+    renderCurrentStep();
+  }
+}
+
 function renderStepDeviceSurface(parent, step) {
   const types = STEP_DEVICE_TYPES[step] || [];
-  if (!types.length) return;
+  if (!types.length) return [];
   const surface = document.createElement("div");
   surface.className = "step-device-surface";
   const header = document.createElement("div");
@@ -1249,7 +1369,15 @@ function renderStepDeviceSurface(parent, step) {
   surface.appendChild(header);
 
   for (const type of types) {
-    const device = (state.available_devices || []).find(item => item.type === type);
+    const candidates = devicesOfType(type);
+    const device = selectedDeviceForType(type);
+    if (
+      candidates.length > 1
+      && (!device || openDevicePickers.has(type))
+    ) {
+      renderDevicePicker(surface, type, candidates, device);
+      if (!device) continue;
+    }
     const row = document.createElement("div");
     row.className = "step-device-row";
     const identity = document.createElement("div");
@@ -1261,6 +1389,17 @@ function renderStepDeviceSurface(parent, step) {
     status.className = online ? "online" : "offline";
     status.textContent = online ? "在线" : device?.latest ? "数据已中断" : "离线";
     identity.append(name, status);
+    if (device && candidates.length > 1 && !openDevicePickers.has(type)) {
+      const change = document.createElement("button");
+      change.type = "button";
+      change.className = "device-change";
+      change.textContent = "更换";
+      change.onclick = () => {
+        openDevicePickers.add(type);
+        renderCurrentStep();
+      };
+      identity.appendChild(change);
+    }
     const metrics = document.createElement("div");
     metrics.className = "step-live-metrics";
     const relevant = (device ? deviceMetrics(device) : []).filter(([,value]) =>
@@ -1300,6 +1439,7 @@ function renderStepDeviceSurface(parent, step) {
     );
   }
   parent.appendChild(surface);
+  return missingDeviceBindings(step);
 }
 
 function createStepField(key, labelText, type, fallback = false) {
@@ -1382,7 +1522,7 @@ function deviceReadingIsFresh(device) {
 }
 
 function environmentReading() {
-  const device = (state.available_devices || []).find(item => item.type === "whd46");
+  const device = selectedDeviceForType("whd46");
   const latest = device?.latest;
   if (!deviceReadingIsFresh(device)) return {device, temp:null, humidity:null};
   const metrics = latest.metrics || {};
@@ -1610,6 +1750,10 @@ function collectStepResult(form, step) {
 
 async function startCurrentStep() {
   const exp = state.experiment;
+  if (missingDeviceBindings(exp.current_step_code).length) {
+    toast("请先选择本批次现场使用的设备。", true);
+    return;
+  }
   try {
     await mutate(
       `/api/experiments/${exp.id}/steps/${exp.current_step_code}/start`,
@@ -1625,6 +1769,10 @@ async function completeCurrentStep(event) {
   event.preventDefault();
   const exp = state.experiment;
   const form = event.currentTarget;
+  if (missingDeviceBindings(exp.current_step_code).length) {
+    toast("请先选择本批次现场使用的设备。", true);
+    return;
+  }
   try {
     const result = collectStepResult(form, exp.current_step_code);
     const preview = await api(
@@ -1961,10 +2109,20 @@ function automaticEventSummary(item) {
   }
   if (item.event_type !== "step_started") return "";
   const types = STEP_DEVICE_TYPES[item.payload?.step_code] || [];
-  const devices = item.payload?.device_capture?.devices || [];
+  const capture = item.payload?.device_capture || {};
+  const devices = capture.devices || [];
   const summaries = [];
   for (const type of types) {
-    const device = devices.find(value => value.type === type && value.snapshot?.state !== "offline");
+    const role = PROCESS_ROLE_BY_DEVICE_TYPE[type];
+    const selectedDeviceId = capture.role_device_ids?.[role];
+    const candidates = devices.filter(value =>
+      value.type === type && value.snapshot?.state !== "offline"
+    );
+    const device = selectedDeviceId != null
+      ? candidates.find(value =>
+        String(value.device_id) === String(selectedDeviceId)
+      )
+      : candidates.length === 1 ? candidates[0] : null;
     if (!device) continue;
     const snapshot = device.snapshot;
     const metrics = snapshot.metrics || {};

@@ -39,6 +39,37 @@ def _app():
     return create_app(engine, repo, secret_key="test-secret"), repo, did
 
 
+def _multi_stirrer_app():
+    repo = Repository(":memory:")
+    latest = {}
+    device_map = {}
+    device_ids = []
+    for index in range(1, 6):
+        name = f"stirrer-{index}"
+        alias = f"HMS-C 搅拌器 {index}"
+        device_id = repo.upsert_device(name, "stirrer", alias)
+        device_ids.append(device_id)
+        latest[device_id] = StatusSnapshot(
+            timestamp=time.time(),
+            state="running",
+            work_mode="stirring",
+            device_id=name,
+            temp_c=25 + index,
+            metrics={"speed": 200 + index * 10},
+        )
+        device_map[device_id] = DeviceConfig(
+            name=name,
+            type="stirrer",
+            alias=alias,
+        )
+    engine = StaticEngine(latest, device_map)
+    return (
+        create_app(engine, repo, secret_key="test-secret"),
+        repo,
+        device_ids,
+    )
+
+
 CREATE = {
     "batch_id": "20260723-AEM-01",
     "membrane_system": "AEM",
@@ -75,6 +106,9 @@ def test_experiments_page_and_static_script_are_served():
     assert "操作与数据时间轴".encode() in page.data
     assert b"MATERIAL_PRESETS" in script.data
     assert b"EVENT_LABELS" in script.data
+    assert b"selectProcessDevice" in script.data
+    assert "选择本批使用的".encode() in script.data
+    assert b"capture.role_device_ids" in script.data
     assert b'createStatus' in page.data
     assert b'tracePanel' in page.data
     assert b'intermediateTraceButton' in page.data
@@ -338,6 +372,80 @@ def test_data_source_binding_and_sse_snapshot():
     body = stream.data.decode()
     assert "event: snapshot" in body
     assert '"acc_volume": 105' in body
+
+
+def test_multiple_stirrers_are_visible_and_batch_selection_is_explicit():
+    app, repo, device_ids = _multi_stirrer_app()
+    client = app.test_client()
+    experiment = client.post("/api/experiments", json=CREATE).get_json()
+
+    initial = client.get(
+        f"/api/experiments/{experiment['id']}"
+    ).get_json()
+    stirrers = [
+        item
+        for item in initial["available_devices"]
+        if item["type"] == "stirrer"
+    ]
+    assert len(stirrers) == 5
+    assert initial["process_status"]["stirrer"]["bound"] is False
+    assert initial["process_status"]["reaction_temp"]["bound"] is False
+
+    selected_id = device_ids[3]
+    response = client.post(
+        f"/api/experiments/{experiment['id']}/device-bindings",
+        json={
+            "client_event_id": "select-stirrer-1",
+            "occurred_at_client_ms": 1_000,
+            "clock_sync_status": "trusted",
+            "client_clock_offset_ms": 0,
+            "selected_at_ms": 1_000,
+            "actor": "张三",
+            "device_id": selected_id,
+        },
+    )
+    assert response.status_code == 200
+    selected = response.get_json()["detail"]
+    assert selected["process_status"]["stirrer"]["device"]["id"] == selected_id
+    assert (
+        selected["process_status"]["reaction_temp"]["device"]["id"]
+        == selected_id
+    )
+    active = [
+        item
+        for item in selected["data_sources"]
+        if item["unlinked_at_ms"] is None
+    ]
+    assert {item["device_role"] for item in active} == {
+        "stirrer",
+        "reaction_temp",
+    }
+    assert {item["device_id"] for item in active} == {selected_id}
+
+    replacement_id = device_ids[1]
+    replaced = client.post(
+        f"/api/experiments/{experiment['id']}/device-bindings",
+        json={
+            "client_event_id": "select-stirrer-2",
+            "occurred_at_client_ms": 2_000,
+            "clock_sync_status": "trusted",
+            "client_clock_offset_ms": 0,
+            "selected_at_ms": 2_000,
+            "actor": "张三",
+            "device_id": replacement_id,
+        },
+    )
+    assert replaced.status_code == 200
+    history = repo.experiments.list_data_source_bindings(
+        experiment["id"]
+    )
+    assert len(history) == 4
+    assert sum(item["unlinked_at_ms"] is None for item in history) == 2
+    assert {
+        item["device_id"]
+        for item in history
+        if item["unlinked_at_ms"] is None
+    } == {replacement_id}
 
 
 def test_experiment_report_pdf():

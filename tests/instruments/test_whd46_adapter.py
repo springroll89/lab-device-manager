@@ -57,6 +57,7 @@ def test_read_status_decodes_channels():
     assert s.metrics["ch2_humid_rh"] == 43.8
     assert s.metrics["ch3_temp_c"] == 22.9
     assert s.metrics["ch3_humid_rh"] == 46.5
+    assert s.metrics["avg_humid_rh"] == pytest.approx(45.166, abs=0.01)
 
 
 def test_read_status_includes_channels_list():

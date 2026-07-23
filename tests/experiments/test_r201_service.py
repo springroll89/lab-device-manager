@@ -143,6 +143,39 @@ def _capture(
     }
 
 
+def test_capture_device_does_not_guess_between_multiple_stirrers():
+    capture = {
+        "devices": [
+            {
+                "device_id": 11,
+                "type": "stirrer",
+                "age_ms": 10,
+                "snapshot": {"state": "running", "temp_c": 31},
+            },
+            {
+                "device_id": 12,
+                "type": "stirrer",
+                "age_ms": 10,
+                "snapshot": {"state": "running", "temp_c": 39},
+            },
+        ]
+    }
+
+    assert R201Service._capture_device(
+        capture,
+        "stirrer",
+        "reaction_temp",
+    ) is None
+
+    capture["role_device_ids"] = {"reaction_temp": 12}
+    selected = R201Service._capture_device(
+        capture,
+        "stirrer",
+        "reaction_temp",
+    )
+    assert selected["device_id"] == 12
+
+
 def _advance_to_aging(service: R201Service, experiment_id: int):
     steps = ["R201-01", "R201-02", "R201-03", "R201-04", "R201-10", "R201-20", "R201-30", "R201-31", "R201-32", "R201-40"]
     for i, step in enumerate(steps):

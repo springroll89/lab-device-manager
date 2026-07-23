@@ -3,7 +3,7 @@ from lab_device_manager.modbus_io import ModbusClient
 from lab_device_manager.instruments.leadfluid_tyd02 import TYD02Adapter
 from lab_device_manager.instruments.stirrer import StirrerAdapter
 from lab_device_manager.instruments.viscometer import ViscometerAdapter
-from lab_device_manager.instruments.whd46_33 import WHD46Adapter
+from lab_device_manager.instruments.whd46 import WHD46Adapter
 
 
 def make_adapter(name: str, transport, slave: int = 1, wordorder: str = "CDAB",

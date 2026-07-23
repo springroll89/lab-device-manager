@@ -81,3 +81,44 @@ def test_get_adapter_returns_adapter_for_requested_device():
         assert eng._get_adapter(device_ids["pump-2"]) is adapters["pump-2"]
     finally:
         eng.stop()
+
+
+def test_reconnect_and_disconnect_keep_connection_owned_by_engine():
+    repo = Repository(":memory:")
+    devices = [
+        DeviceConfig(
+            name="whd-1",
+            type="whd46",
+            serial_port="/dev/old",
+        )
+    ]
+    opened_ports = []
+    closed_ports = []
+
+    def factory(config):
+        opened_ports.append(config.serial_port)
+        adapter = ScriptedAdapter([_snap("running")])
+        return adapter, lambda: closed_ports.append(config.serial_port)
+
+    engine = Engine(
+        repo,
+        devices,
+        sample_interval_s=0.02,
+        adapter_factory=factory,
+    )
+    engine.start()
+    device_id = next(iter(engine.device_map()))
+    try:
+        result = engine.reconnect_device(device_id, "/dev/new")
+        assert result == {"ok": True, "port": "/dev/new"}
+        assert opened_ports == ["/dev/old", "/dev/new"]
+        assert closed_ports == ["/dev/old"]
+        assert engine.device_map()[device_id].serial_port == "/dev/new"
+
+        disconnected = engine.disconnect_device(device_id)
+        assert disconnected == {"ok": True}
+        assert closed_ports == ["/dev/old", "/dev/new"]
+        assert engine.latest()[device_id].state == "offline"
+        assert engine._get_adapter(device_id) is None
+    finally:
+        engine.stop()

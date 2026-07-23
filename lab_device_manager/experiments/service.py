@@ -103,6 +103,16 @@ VISCOSITY_FIELDS = (
     "torque_pct",
 )
 
+PROCESS_DEVICE_BINDINGS = {
+    "tyd02": {"acid_pump": "acc_volume"},
+    "stirrer": {
+        "stirrer": "speed",
+        "reaction_temp": "temp_c",
+    },
+    "viscometer": {"viscometer": "viscosity_mPas"},
+    "whd46": {"environment": "temp_c"},
+}
+
 
 class R201Error(Exception):
     def __init__(
@@ -979,8 +989,16 @@ class R201Service:
                 "endpoint_ready": detail["endpoint_ready"],
             }
         capture = data.get("device_capture") or {}
-        viscometer = self._capture_device(capture, "viscometer")
-        stirrer = self._capture_device(capture, "stirrer")
+        viscometer = self._capture_device(
+            capture,
+            "viscometer",
+            "viscometer",
+        )
+        stirrer = self._capture_device(
+            capture,
+            "stirrer",
+            "reaction_temp",
+        )
         provenance = {}
 
         def capture_field(field: str, device: Optional[dict], *keys):
@@ -1173,6 +1191,78 @@ class R201Service:
             )
         except sqlite3.IntegrityError as exc:
             raise R201Error("invalid device, run, or step binding") from exc
+
+    def select_process_device(
+        self,
+        experiment_id: int,
+        data: dict,
+    ) -> dict:
+        experiment = self._get(experiment_id)
+        self._require_fields(
+            data,
+            (
+                "client_event_id",
+                "actor",
+                "device_id",
+                "device_type",
+            ),
+        )
+        self._require_operator(experiment, data.get("actor"))
+        if experiment["status"] in ("released", "terminated"):
+            raise R201Error(
+                f"experiment status {experiment['status']} cannot change devices",
+                409,
+            )
+        device_type = str(data["device_type"])
+        role_metrics = PROCESS_DEVICE_BINDINGS.get(device_type)
+        if role_metrics is None:
+            raise R201Error("unsupported process device type")
+        duplicate = self._idempotent_event(
+            experiment_id,
+            data["client_event_id"],
+            "process_device_selected",
+        )
+        if duplicate is not None:
+            roles = set(role_metrics)
+            return {
+                "bindings": [
+                    item
+                    for item in self.store.list_data_source_bindings(
+                        experiment_id
+                    )
+                    if item["device_role"] in roles
+                    and item["unlinked_at_ms"] is None
+                ],
+                "event": duplicate,
+            }
+        selected_at_ms = int(
+            data.get("selected_at_ms") or self.clock_ms()
+        )
+        active = self.store.get_active_step(experiment_id)
+        event = self._event(
+            data,
+            "process_device_selected",
+            {
+                "device_id": int(data["device_id"]),
+                "device_type": device_type,
+                "roles": list(role_metrics),
+                "selected_at_ms": selected_at_ms,
+            },
+        )
+        try:
+            bindings = self.store.replace_active_role_bindings(
+                experiment_id,
+                device_id=int(data["device_id"]),
+                role_metrics=role_metrics,
+                linked_at_ms=selected_at_ms,
+                link_method="manual",
+                client_event_id=str(data["client_event_id"]),
+                step_instance_id=active["id"] if active else None,
+                event=event,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise R201Error("invalid process device", 400) from exc
+        return {"bindings": bindings, "event": event}
 
     def open_deviation(self, experiment_id: int, data: dict) -> dict:
         experiment = self._get(experiment_id)
@@ -1473,16 +1563,31 @@ class R201Service:
             raise R201Error("actor does not match the assigned operator")
 
     @staticmethod
-    def _capture_device(capture: dict, device_type: str) -> Optional[dict]:
+    def _capture_device(
+        capture: dict,
+        device_type: str,
+        role: Optional[str] = None,
+    ) -> Optional[dict]:
+        selected_device_id = (
+            (capture or {}).get("role_device_ids", {}).get(role)
+            if role
+            else None
+        )
         candidates = [
             item
             for item in (capture or {}).get("devices", [])
             if item.get("type") == device_type
+            and (
+                selected_device_id is None
+                or str(item.get("device_id")) == str(selected_device_id)
+            )
             and item.get("snapshot")
             and item["snapshot"].get("state") != "offline"
             and int(item.get("age_ms") or 0) <= 15_000
         ]
-        return candidates[0] if candidates else None
+        if selected_device_id is not None:
+            return candidates[0] if candidates else None
+        return candidates[0] if len(candidates) == 1 else None
 
     @staticmethod
     def _capture_value(device: Optional[dict], *keys):
@@ -1541,10 +1646,14 @@ class R201Service:
                 "interval_end_ms": completion_at_ms,
             }
 
-        whd = self._capture_device(capture, "whd46")
-        stirrer = self._capture_device(capture, "stirrer")
-        pump = self._capture_device(capture, "tyd02")
-        viscometer = self._capture_device(capture, "viscometer")
+        whd = self._capture_device(capture, "whd46", "environment")
+        stirrer = self._capture_device(capture, "stirrer", "stirrer")
+        pump = self._capture_device(capture, "tyd02", "acid_pump")
+        viscometer = self._capture_device(
+            capture,
+            "viscometer",
+            "viscometer",
+        )
 
         environment_temp, environment_temp_key = self._capture_value(
             whd, "temp_c", "avg_temp_c"
@@ -1662,7 +1771,11 @@ class R201Service:
                 if start_event
                 else {}
             )
-            start_pump = self._capture_device(start_capture, "tyd02")
+            start_pump = self._capture_device(
+                start_capture,
+                "tyd02",
+                "acid_pump",
+            )
             start_volume, start_volume_key = self._capture_value(
                 start_pump, "acc_volume", "delivered_volume"
             )
