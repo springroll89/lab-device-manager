@@ -63,6 +63,70 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+.primary-nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.primary-nav .primary-nav-link {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 11px;
+  color: var(--pc-muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.primary-nav .primary-nav-link:hover {
+  color: var(--pc-text);
+  border-color: var(--pc-line);
+  background: var(--pc-surface);
+}
+
+.primary-nav .primary-nav-link.is-active,
+.primary-nav .primary-nav-link[aria-current="page"] {
+  color: #06130f;
+  border-color: var(--pc-accent);
+  background: var(--pc-accent);
+  font-weight: 720;
+}
+
+@media (max-width: 900px) {
+  .page-dashboard header,
+  .page-device header,
+  .page-run header,
+  .page-sensor header,
+  .page-experiment .topbar,
+  .page-inventory .inventory-header,
+  .page-measurement-station > header,
+  .page-accounts .account-topbar {
+    flex-wrap: wrap;
+  }
+
+  .page-dashboard header > .header-account-group,
+  .page-device header > .header-account-group,
+  .page-run header > .header-account-group,
+  .page-sensor header > .header-account-group,
+  .page-inventory .inventory-header > .header-account-group,
+  .page-measurement-station > header > .header-account-group,
+  .page-experiment .top-actions,
+  .page-accounts .account-nav {
+    width: 100%;
+    justify-content: space-between;
+  }
 }
 
 .account-menu-host {
@@ -2729,6 +2793,24 @@ summary:focus-visible {
 }
 
 @media (max-width: 720px) {
+  .header-account-group {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .primary-nav {
+    max-width: min(100%, 430px);
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .primary-nav .primary-nav-link {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 7px 9px;
+  }
+
   .page-dashboard header,
   .page-device header,
   .page-run header,
@@ -2753,8 +2835,7 @@ summary:focus-visible {
     display: none;
   }
 
-  .page-experiment .brand span,
-  .page-experiment .top-actions .link-btn {
+  .page-experiment .brand span {
     display: none;
   }
 

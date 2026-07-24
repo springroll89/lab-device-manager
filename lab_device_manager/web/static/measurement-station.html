@@ -7,10 +7,10 @@
   <link rel="stylesheet" href="/static/puricore-theme.css">
   <style>
     body{margin:0;background:#081116;color:#ecf5f4;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
-    header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid #24404b}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;border-bottom:1px solid #24404b}
     main{width:min(1100px,100%);margin:auto;padding:28px 18px}
     .toolbar,.cards{display:flex;gap:12px;flex-wrap:wrap}.cards{margin-top:22px}
-    button,a{min-height:46px;padding:11px 18px;border-radius:12px;border:1px solid #31505c;background:#122731;color:#eef;text-decoration:none}
+    button,.toolbar a{min-height:46px;padding:11px 18px;border-radius:12px;border:1px solid #31505c;background:#122731;color:#eef;text-decoration:none}
     .primary{background:#69dec0;color:#071712;border:0;font-weight:700}
     .card{flex:1 1 290px;padding:18px;border:1px solid #24404b;border-radius:16px;background:#102029}
     .muted{color:#8ca7aa}.ok{color:#69dec0}.busy{color:#f5bd4f}
@@ -19,10 +19,13 @@
     input{width:100%;margin-top:12px;padding:13px;border-radius:10px;border:1px solid #31505c;background:#081116;color:#fff}
   </style>
 </head>
-<body>
+<body class="page-measurement-station">
   <header>
     <strong>粘度测量工位</strong>
-    <div><a href="/experiments">返回实验工作台</a><span data-account-menu></span></div>
+    <div class="header-account-group">
+      <nav data-primary-nav></nav>
+      <span data-account-menu></span>
+    </div>
   </header>
   <main>
     <p class="muted">先扫描样品标签，系统确认批次后锁定粘度计，避免读数进入错误批次。</p>
@@ -43,6 +46,7 @@
       <button id="cameraScanClose" type="button">关闭</button>
     </div>
   </dialog>
+  <script src="/static/primary-navigation.js"></script>
   <script src="/static/account-menu.js"></script>
   <script src="/static/scanner.js"></script>
   <script src="/static/measurement-station.js"></script>

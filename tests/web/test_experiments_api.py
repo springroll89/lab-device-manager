@@ -258,6 +258,18 @@ def test_traceability_api_prints_and_tracks_intermediate_lifecycle():
     assert label.status_code == 200
     assert item["item_code"].encode() in label.data
     assert "打印标签".encode() in label.data
+    assert "实验人".encode() in label.data
+
+    qr = client.get(
+        f"/api/trace/qr.png?code={item['item_code']}"
+    )
+    decoded = zxingcpp.read_barcodes(Image.open(BytesIO(qr.data)))
+    assert qr.status_code == 200
+    assert qr.mimetype == "image/png"
+    assert qr.headers["X-QR-Code"] == item["item_code"]
+    assert "PURICORE实验实物" in decoded[0].text
+    assert f"编号：{item['item_code']}" in decoded[0].text
+    assert "实验人：" in decoded[0].text
 
     traceability = client.get(
         f"/api/experiments/{exp['id']}/traceability"
@@ -295,10 +307,12 @@ def test_storage_location_label_and_qr_are_printable():
     assert b"size:60mm 48mm" in label.data
     assert b"min-height:8mm" in label.data
 
-    qr = client.get("/api/trace/qr.svg?code=CABINET-02-B05")
+    qr = client.get("/api/trace/qr.png?code=CABINET-02-B05")
+    decoded = zxingcpp.read_barcodes(Image.open(BytesIO(qr.data)))
     assert qr.status_code == 200
-    assert qr.mimetype == "image/svg+xml"
-    assert b"<svg" in qr.data
+    assert qr.mimetype == "image/png"
+    assert "PURICORE存储位置" in decoded[0].text
+    assert "编号：CABINET-02-B05" in decoded[0].text
 
 
 def test_material_container_can_be_registered_and_resolved_by_scan():
@@ -327,12 +341,12 @@ def test_material_container_can_be_registered_and_resolved_by_scan():
     assert resolved.get_json()["material"]["material_name"] == "TEOS"
 
 
-def test_material_management_page_and_url_qr_are_available():
+def test_material_management_page_and_offline_qr_are_available():
     app, _, _ = _app()
     client = app.test_client()
     page = client.get("/materials")
     assert page.status_code == 200
-    assert b"materials.js" in page.data
+    assert b"inventory.js" in page.data
 
     created = client.post(
         "/api/material-containers",
@@ -344,7 +358,7 @@ def test_material_management_page_and_url_qr_are_available():
         },
     ).get_json()
     qr = client.get(
-        f"/api/trace/qr.svg?code={created['container_code']}"
+        f"/api/trace/qr.png?code={created['container_code']}"
     )
     label = client.get(
         f"/api/material-containers/{created['id']}/label"
@@ -354,9 +368,10 @@ def test_material_management_page_and_url_qr_are_available():
     )
 
     assert qr.status_code == 200
-    assert qr.headers["X-QR-Payload"].endswith(
-        "/scan/RM-ETOH-0001"
-    )
+    decoded = zxingcpp.read_barcodes(Image.open(BytesIO(qr.data)))
+    assert qr.headers["X-QR-Code"] == "RM-ETOH-0001"
+    assert "PURICORE原材料" in decoded[0].text
+    assert "编号：RM-ETOH-0001" in decoded[0].text
     assert label.status_code == 200
     assert "原材料标签".encode() in label.data
     assert detail.status_code == 200
@@ -366,7 +381,7 @@ def test_material_management_page_and_url_qr_are_available():
         follow_redirects=False,
     )
     assert redirect_response.headers["Location"] == (
-        f"/materials?scan={created['container_code']}"
+        f"/inventory?scan={created['container_code']}"
     )
 
 
@@ -391,6 +406,36 @@ def test_camera_frame_can_be_decoded_on_server_for_ios_fallback():
     assert response.status_code == 200
     assert response.get_json()["code"].endswith("/scan/RM-TEOS-0001")
     assert response.get_json()["format"] == "QR Code"
+
+
+def test_offline_qr_text_resolves_by_embedded_identity():
+    app, _, _ = _app()
+    client = app.test_client()
+    created = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-TEXT-0001",
+            "material_name": "离线文本原料",
+            "quantity_remaining": 50,
+            "unit": "mL",
+        },
+    ).get_json()
+    payload = "\n".join(
+        [
+            "PURICORE原材料",
+            "类型：原材料",
+            "名称：离线文本原料",
+            f"编号：{created['container_code']}",
+        ]
+    )
+
+    response = client.get("/api/scan/resolve", query_string={"code": payload})
+
+    assert response.status_code == 200
+    assert response.get_json()["kind"] == "material_container"
+    assert response.get_json()["material"]["container_code"] == (
+        "RM-TEXT-0001"
+    )
 
 
 def test_camera_decode_rejects_missing_invalid_and_barcode_free_images():

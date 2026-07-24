@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
+from io import BytesIO
 from urllib.parse import quote
 
-from reportlab.graphics import renderSVG
-from reportlab.graphics.barcode import createBarcodeDrawing
+import qrcode
+from qrcode.constants import ERROR_CORRECT_M
 
 
 STATUS_LABELS = {
@@ -23,22 +24,73 @@ TYPE_LABELS = {
 }
 
 
-def trace_qr_payload(public_base_url: str, code: str) -> str:
-    base = str(public_base_url or "").rstrip("/")
-    if not base:
-        raise ValueError("public_base_url is required for trace QR labels")
-    return f"{base}/scan/{quote(str(code), safe='')}"
-
-
-def qr_svg(payload: str) -> str:
-    drawing = createBarcodeDrawing(
-        "QR",
-        value=payload,
-        width=120,
-        height=120,
-        barLevel="M",
+def trace_qr_payload(item: dict, experiment: dict) -> str:
+    experimenter = (
+        experiment.get("operator") or item.get("created_by") or "—"
     )
-    return renderSVG.drawToString(drawing)
+    return "\n".join(
+        [
+            "PURICORE实验实物",
+            f"类型：{TYPE_LABELS.get(item['item_type'], item['item_type'])}",
+            f"名称：{item['display_name']}",
+            f"编号：{item['item_code']}",
+            f"批次：{experiment['batch_id']}",
+            f"状态：{STATUS_LABELS.get(item['status'], item['status'])}",
+            f"生成：{_time_text(item.get('created_at_ms'))}",
+            f"实验人：{experimenter}",
+        ]
+    )
+
+
+def storage_location_qr_payload(location: dict) -> str:
+    return "\n".join(
+        [
+            "PURICORE存储位置",
+            "类型：存储位置",
+            f"名称：{location['display_name']}",
+            f"编号：{location['location_code']}",
+            f"保存条件：{location.get('storage_condition') or '按实验要求'}",
+        ]
+    )
+
+
+def material_container_qr_payload(container: dict) -> str:
+    quantity = "未录入"
+    if container.get("quantity_remaining") is not None:
+        quantity = (
+            f"{container['quantity_remaining']} "
+            f"{container.get('unit') or ''}"
+        ).strip()
+    return "\n".join(
+        [
+            "PURICORE原材料",
+            "类型：原材料",
+            f"名称：{container['material_name']}",
+            f"编号：{container['container_code']}",
+            f"供应商批号：{container.get('supplier_lot') or '—'}",
+            f"有效期：{container.get('expires_on') or '—'}",
+            f"登记余量：{quantity}",
+        ]
+    )
+
+
+def qr_png(payload: str) -> bytes:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=ERROR_CORRECT_M,
+        box_size=14,
+        border=4,
+    )
+    qr.add_data(payload)
+    qr.make(fit=True)
+    image = qr.make_image(
+        fill_color="black", back_color="white"
+    ).convert("RGB")
+    if image.size[0] < 600:
+        image = image.resize((600, 600))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def _time_text(value) -> str:
@@ -79,7 +131,7 @@ def _page_shell(title: str, labels: str) -> str:
     .meta b{{font-weight:700}}
     .qr{{display:flex;min-width:0;min-height:0;flex-direction:column;
       align-items:center;justify-content:flex-start;padding-top:1mm}}
-    .qr img{{display:block;width:22mm;height:22mm;flex:0 0 22mm}}
+    .qr img{{display:block;width:24mm;height:24mm;flex:0 0 24mm}}
     .qr small{{display:block;width:100%;min-height:8mm;margin-top:1.2mm;
       font-size:5.5pt;line-height:1.25;text-align:center;overflow-wrap:anywhere;
       word-break:break-all}}
@@ -136,11 +188,12 @@ def trace_labels_html(
               <div><b>批次</b> {escape(experiment['batch_id'])}</div>
               <div><b>状态</b> {escape(STATUS_LABELS.get(item['status'], item['status']))}</div>
               {quantity}{location}{hold}
-              <div><b>生成</b> {escape(_time_text(item['created_at_ms']))} · {escape(item['created_by'])}</div>
+              <div><b>生成</b> {escape(_time_text(item['created_at_ms']))}</div>
+              <div><b>实验人</b> {escape(experiment.get('operator') or item.get('created_by') or '—')}</div>
             </div>
           </div>
           <div class="qr">
-            <img src="/api/trace/qr.svg?code={quote(item['item_code'])}" alt="追溯二维码">
+            <img src="/api/trace/qr.png?code={quote(item['item_code'])}" alt="追溯二维码">
             <small>{escape(item['item_code'])}</small>
           </div>
         </article>"""
@@ -167,7 +220,7 @@ def storage_location_label_html(
         </div>
       </div>
       <div class="qr">
-        <img src="/api/trace/qr.svg?code={quote(location['location_code'])}" alt="位置二维码">
+        <img src="/api/trace/qr.png?code={quote(location['location_code'])}" alt="位置二维码">
         <small>{escape(location['location_code'])}</small>
       </div>
     </article>"""
@@ -201,7 +254,7 @@ def material_container_label_html(
         </div>
       </div>
       <div class="qr">
-        <img src="/api/trace/qr.svg?code={quote(container['container_code'])}" alt="原材料二维码">
+        <img src="/api/trace/qr.png?code={quote(container['container_code'])}" alt="原材料二维码">
         <small>{escape(container['container_code'])}</small>
       </div>
     </article>"""

@@ -28,6 +28,11 @@
     .brand img{width:44px;height:44px;object-fit:contain;border-radius:10px}
     .brand strong{display:block;font-size:18px;letter-spacing:.02em}
     .top-actions{display:flex;align-items:center;gap:10px}
+    .experiment-page-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      margin-bottom:16px;padding:10px 12px;border:1px solid rgba(255,255,255,.07);
+      border-radius:12px;background:rgba(255,255,255,.025)}
+    .experiment-recording-mode{color:var(--muted);font-size:12px}
+    .experiment-recording-mode strong{color:#ffe0a3;font-weight:650}
     .scan-video{width:100%;min-height:240px;max-height:55vh;object-fit:cover;
       border-radius:14px;background:#020709}
     .mode{padding:7px 12px;border-radius:999px;color:#ffe0a3;background:rgba(245,189,79,.12);
@@ -154,7 +159,7 @@
     .sync{font-size:11px;color:var(--muted)}
     @media(max-width:900px){
       .grid,.layout{grid-template-columns:1fr}.topbar{min-height:64px}
-      .mode{display:none}.page-title{align-items:flex-start;flex-direction:column}.panel-body{padding:16px}
+      .page-title{align-items:flex-start;flex-direction:column}.panel-body{padding:16px}
     }
     @media(max-width:560px){
       .form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}
@@ -172,16 +177,16 @@
       <span><strong>实验执行</strong></span>
     </a>
     <div class="top-actions">
-      <span class="mode">纸电并行验证</span>
-      <button id="cameraScanButton" class="secondary" type="button">扫码</button>
-      <a class="link-btn" href="/materials">原材料</a>
-      <a class="link-btn" href="/measurement-station">粘度工位</a>
-      <a class="link-btn" href="/">设备看板</a>
+      <nav data-primary-nav></nav>
       <div data-account-menu></div>
     </div>
   </header>
 
   <main>
+    <div class="experiment-page-actions">
+      <span class="experiment-recording-mode">记录方式：<strong>纸电并行验证</strong></span>
+      <button id="cameraScanButton" class="secondary" type="button">扫码查询</button>
+    </div>
     <section id="listView">
       <div class="page-title">
         <div id="clockSync" class="sync">正在校准平板时钟…</div>
@@ -486,6 +491,7 @@
   </dialog>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/static/primary-navigation.js"></script>
   <script src="/static/account-menu.js"></script>
   <script src="/static/outbox.js"></script>
   <script src="/static/scanner.js"></script>
