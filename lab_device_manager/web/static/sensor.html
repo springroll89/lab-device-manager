@@ -750,11 +750,19 @@ function showFolderBrowser() {
           padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px;
           border-radius: 6px;
         `;
-        item.innerHTML = `<span style="color:#3498DB">📁</span> ${dir}`;
+        const icon = document.createElement('span');
+        icon.style.color = '#3498DB';
+        icon.textContent = '📁';
+        item.append(icon, document.createTextNode(` ${dir}`));
         item.onmouseover = () => item.style.background = '#262b34';
         item.onmouseout = () => item.style.background = 'transparent';
-        const separator = path && path.endsWith('\\') ? '' : '\\';
-        item.onclick = () => loadPath(path ? `${path}${separator}${dir}` : dir);
+        const base = data.current || path;
+        const separator = base.includes('\\') ? '\\' : '/';
+        item.onclick = () => loadPath(
+          base
+            ? `${base}${base.endsWith(separator) ? '' : separator}${dir}`
+            : dir
+        );
         list.appendChild(item);
       });
     } catch (e) {

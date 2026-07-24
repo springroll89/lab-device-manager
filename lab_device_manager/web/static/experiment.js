@@ -184,8 +184,10 @@ let clockStatus = "unknown";
 let toastTimer = null;
 let flushingOutbox = false;
 let liveConnecting = false;
+let viewedStepCode = null;
 const openDevicePickers = new Set();
 const pendingDeviceSelections = new Map();
+const stepFormUiState = new Map();
 const OUTBOX_KEY = "r201-event-outbox-v1";
 const STEP_DRAFT_PREFIX = "r201-step-draft-v1";
 
@@ -405,6 +407,50 @@ function restoreStepDraft(step, form) {
 
 function clearStepDraft(step) {
   try { sessionStorage.removeItem(stepDraftKey(step)); } catch (_) {}
+}
+
+function captureStepFormUiState(form) {
+  if (!form?.dataset.stepCode) return;
+  const focused = form.contains(document.activeElement)
+    ? document.activeElement
+    : null;
+  const selectionSupported = focused
+    && typeof focused.selectionStart === "number"
+    && typeof focused.selectionEnd === "number";
+  stepFormUiState.set(form.dataset.stepCode, {
+    manualFallbackOpen:Boolean(form.querySelector(".manual-fallback")?.open),
+    focusedName:focused?.name || null,
+    selectionStart:selectionSupported ? focused.selectionStart : null,
+    selectionEnd:selectionSupported ? focused.selectionEnd : null
+  });
+}
+
+function restoreStepFormUiState(step, form) {
+  const saved = stepFormUiState.get(step);
+  if (!saved) return;
+  const fallback = form.querySelector(".manual-fallback");
+  if (fallback) fallback.open = saved.manualFallbackOpen;
+  if (!saved.focusedName) return;
+  const focused = Array.from(form.elements).find(
+    input => input.name === saved.focusedName
+  );
+  if (!focused) return;
+  focused.focus({preventScroll:true});
+  if (
+    saved.selectionStart !== null
+    && typeof focused.setSelectionRange === "function"
+  ) {
+    focused.setSelectionRange(saved.selectionStart, saved.selectionEnd);
+  }
+}
+
+function preserveStepFormDuringLiveUpdate() {
+  const form = byId("stepResultForm");
+  if (!form) return false;
+  return (
+    form.contains(document.activeElement)
+    || Boolean(form.querySelector(".manual-fallback")?.open)
+  );
 }
 
 function processValue(label, value) {
@@ -1140,10 +1186,35 @@ function renderProgress() {
   const strip = byId("stepStrip");
   strip.textContent = "";
   MAIN_STEPS.forEach(step => {
-    const item = document.createElement("div");
-    item.className = `step-dot${completed.has(step) ? " done" : ""}${step === current ? " current" : ""}`;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `step-dot${completed.has(step) ? " done" : ""}${step === current ? " current" : ""}${step === viewedStepCode ? " viewing" : ""}`;
     item.textContent = String(MAIN_STEPS.indexOf(step) + 1);
-    item.title = `${state.step_labels?.[step] || step}（内部编号 ${step}）`;
+    const label = state.step_labels?.[step] || step;
+    if (completed.has(step)) {
+      item.title = `查看已保存的“${label}”结果`;
+      item.onclick = () => {
+        viewedStepCode = step;
+        renderProgress();
+        renderCurrentStep();
+        byId("currentStep")?.scrollIntoView({
+          behavior:"smooth",
+          block:"start"
+        });
+      };
+    } else if (step === current) {
+      item.title = `当前步骤：${label}`;
+      item.onclick = () => {
+        viewedStepCode = null;
+        renderProgress();
+        renderCurrentStep();
+      };
+      item.setAttribute("aria-current", "step");
+    } else {
+      item.title = `${label}（尚未完成）`;
+      item.disabled = true;
+    }
+    item.setAttribute("aria-label", `${MAIN_STEPS.indexOf(step) + 1}. ${label}`);
     strip.appendChild(item);
   });
 }
@@ -1153,7 +1224,16 @@ function renderCurrentStep() {
   const step = exp.current_step_code;
   const box = byId("currentStep");
   const previousForm = byId("stepResultForm");
-  if (previousForm) saveStepDraft(previousForm.dataset.stepCode, previousForm);
+  if (previousForm) {
+    saveStepDraft(previousForm.dataset.stepCode, previousForm);
+    captureStepFormUiState(previousForm);
+  }
+  if (viewedStepCode && viewedStepCode !== step) {
+    renderHistoricalStep(box, viewedStepCode);
+    return;
+  }
+  viewedStepCode = null;
+  box.classList.remove("history-view");
   box.textContent = "";
   const code = document.createElement("div");
   code.className = "step-code";
@@ -1243,6 +1323,13 @@ function renderCurrentStep() {
   form.onsubmit = completeCurrentStep;
   box.appendChild(form);
   restoreStepDraft(step, form);
+  restoreStepFormUiState(step, form);
+  const fallback = form.querySelector(".manual-fallback");
+  if (fallback) {
+    fallback.addEventListener("toggle", () => {
+      captureStepFormUiState(form);
+    });
+  }
   if (missingDeviceTypes.length) {
     form.dataset.deviceBindingMissing = "true";
     form.querySelectorAll('button[type="submit"]').forEach(button => {
@@ -1252,6 +1339,113 @@ function renderCurrentStep() {
   }
   form.addEventListener("input", () => saveStepDraft(step, form));
   form.addEventListener("change", () => saveStepDraft(step, form));
+}
+
+function latestCompletedStep(stepCode) {
+  return [...(state.steps || [])].reverse().find(
+    item => item.step_code === stepCode && item.status === "completed"
+  ) || null;
+}
+
+function historyValue(key, value) {
+  if (typeof value === "boolean") return value ? "已确认" : "未确认";
+  if (key === "device_checks" && Array.isArray(value)) {
+    return value.join("、") || "无设备记录";
+  }
+  if (key === "glassware_items" && Array.isArray(value)) {
+    return value.map(item => (
+      typeof item === "object"
+        ? `${item.name || "器皿"}${item.dry ? "（已确认干燥）" : ""}`
+        : String(item)
+    )).join("、");
+  }
+  if (key === "materials" && Array.isArray(value)) {
+    return value.map(item => {
+      if (!item || typeof item !== "object") return String(item);
+      const quantity = item.actual != null
+        ? `${item.actual} ${item.unit || ""}`.trim()
+        : "未记录用量";
+      const lot = item.lot ? ` · 批号 ${item.lot}` : "";
+      return `${item.name || "物料"}：${quantity}${lot}`;
+    }).join("\n");
+  }
+  if (Array.isArray(value)) return value.map(String).join("、");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return value === null || value === undefined || value === "" ? "—" : String(value);
+}
+
+function renderHistoricalStep(box, stepCode) {
+  const completed = latestCompletedStep(stepCode);
+  if (!completed) {
+    viewedStepCode = null;
+    renderProgress();
+    renderCurrentStep();
+    return;
+  }
+  box.classList.add("history-view");
+  box.textContent = "";
+  const stepIndex = MAIN_STEPS.indexOf(stepCode);
+  const code = document.createElement("div");
+  code.className = "step-code";
+  code.textContent = `历史记录 · 第 ${stepIndex + 1} 步 / 共 ${MAIN_STEPS.length} 步`;
+  const name = document.createElement("div");
+  name.className = "step-name";
+  name.textContent = state.step_labels?.[stepCode] || stepCode;
+  const notice = document.createElement("div");
+  notice.className = "history-notice";
+  const noticeCopy = document.createElement("div");
+  const noticeTitle = document.createElement("strong");
+  noticeTitle.textContent = "正在查看已完成步骤";
+  const noticeText = document.createElement("p");
+  noticeText.textContent = `这里只显示当时保存的结果，不会回退进度或修改后续数据。当前执行到：${state.step_labels?.[state.experiment.current_step_code] || state.experiment.current_step_code}。`;
+  noticeCopy.append(noticeTitle, noticeText);
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "secondary";
+  back.textContent = "返回当前步骤";
+  back.onclick = () => {
+    viewedStepCode = null;
+    renderProgress();
+    renderCurrentStep();
+  };
+  notice.append(noticeCopy, back);
+  const meta = document.createElement("div");
+  meta.className = "history-meta";
+  meta.append(
+    badge(`开始 ${fmtTime(completed.started_effective_at_ms)}`),
+    badge(`完成 ${fmtTime(completed.ended_effective_at_ms)}`),
+    badge(`操作员 ${completed.ended_by || completed.started_by || "—"}`)
+  );
+  const grid = document.createElement("div");
+  grid.className = "history-result-grid";
+  const resultEntries = Object.entries(completed.result || {}).filter(
+    ([key]) => key !== "data_provenance"
+  );
+  if (!resultEntries.length) {
+    const empty = document.createElement("p");
+    empty.className = "history-empty";
+    empty.textContent = "该步骤只记录了开始和完成时间，没有额外填写项。";
+    grid.appendChild(empty);
+  } else {
+    resultEntries.forEach(([key, value]) => {
+      const item = document.createElement("div");
+      item.className = "history-result";
+      const label = document.createElement("span");
+      label.textContent = FIELD_LABELS[key] || {
+        glassware_items:"已确认器皿",
+        materials:"物料记录",
+        dose_delivered_ml:"实际加入量 mL",
+        dose_error_ml:"加入量偏差 mL",
+        acid_calculation_error_pct:"酸水计算偏差 %",
+        net_product_mass_g:"产品净重 g"
+      }[key] || key;
+      const valueNode = document.createElement("strong");
+      valueNode.textContent = historyValue(key, value);
+      item.append(label, valueNode);
+      grid.appendChild(item);
+    });
+  }
+  box.append(code, name, notice, meta, grid);
 }
 
 function devicesOfType(type) {
@@ -1349,7 +1543,9 @@ async function selectProcessDevice(deviceId, type) {
     await loadDetail();
   } catch (error) {
     toast(error.message, true);
-    renderCurrentStep();
+    if (!viewedStepCode && !preserveStepFormDuringLiveUpdate()) {
+      renderCurrentStep();
+    }
   }
 }
 

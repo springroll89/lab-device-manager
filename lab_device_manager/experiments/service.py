@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -231,11 +232,6 @@ class R201Service:
             payload,
             now_ms=event["received_at_server_ms"],
             event=event,
-        )
-        self.store.ensure_batch_trace_item(
-            created["id"],
-            now_ms=event["effective_at_ms"],
-            actor=event["actor"],
         )
         return created
 
@@ -696,7 +692,7 @@ class R201Service:
                 event["actor"],
                 event,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, sqlite3.IntegrityError) as exc:
             raise R201Error(str(exc), 409) from exc
         return {"experiment": updated, "step": step}
 
@@ -884,16 +880,12 @@ class R201Service:
             materials = self._normalize_materials(
                 result["materials"], event["effective_at_ms"], event["actor"]
             )
-        existing_count = len(self.store.list_deviations(experiment_id))
         deviations = []
-        for index, finding in enumerate(findings, start=1):
+        for finding in findings:
             operator_confirmed = (
                 finding["rule_code"] in confirmed_codes
                 and not str(experiment.get("reviewer") or "").strip()
                 and finding.get("severity") == "warning"
-            )
-            deviation_no = (
-                f"{experiment['batch_id']}-DEV-{existing_count + index:02d}"
             )
             deviation_event = {
                 **event,
@@ -905,7 +897,6 @@ class R201Service:
                 "actor": "system",
                 "source_type": "derived",
                 "payload": {
-                    "deviation_no": deviation_no,
                     "rule_code": finding["rule_code"],
                     "description": finding["description"],
                     "operator_confirmed": operator_confirmed,
@@ -914,7 +905,6 @@ class R201Service:
             deviations.append(
                 {
                     **finding,
-                    "deviation_no": deviation_no,
                     "opened_at_ms": event["effective_at_ms"],
                     "opened_by": "system",
                     "status": "closed" if operator_confirmed else "open",
@@ -926,9 +916,7 @@ class R201Service:
                     "disposition": (
                         "continue" if operator_confirmed else None
                     ),
-                    "reviewed_by": (
-                        event["actor"] if operator_confirmed else None
-                    ),
+                    "reviewed_by": None,
                     "reviewed_at_ms": (
                         event["effective_at_ms"]
                         if operator_confirmed
@@ -950,7 +938,7 @@ class R201Service:
                 deviations=deviations,
                 materials=materials,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, sqlite3.IntegrityError) as exc:
             raise R201Error(str(exc), 409) from exc
         return {
             "experiment": updated,
@@ -1208,7 +1196,11 @@ class R201Service:
             ),
         )
         self._require_operator(experiment, data.get("actor"))
-        if experiment["status"] in ("released", "terminated"):
+        if experiment["status"] in (
+            "pending_review",
+            "released",
+            "terminated",
+        ):
             raise R201Error(
                 f"experiment status {experiment['status']} cannot change devices",
                 409,
@@ -1266,7 +1258,11 @@ class R201Service:
 
     def open_deviation(self, experiment_id: int, data: dict) -> dict:
         experiment = self._get(experiment_id)
-        if experiment["status"] in ("released", "terminated"):
+        if experiment["status"] in (
+            "pending_review",
+            "released",
+            "terminated",
+        ):
             raise R201Error(
                 f"experiment status {experiment['status']} cannot open a deviation",
                 409,
@@ -1293,8 +1289,6 @@ class R201Service:
         severity = data.get("severity", "warning")
         if severity not in ("warning", "critical"):
             raise R201Error("severity must be warning or critical")
-        existing = self.store.list_deviations(experiment_id)
-        deviation_no = f"{experiment['batch_id']}-DEV-{len(existing) + 1:02d}"
         event = self._event(
             {
                 **data,
@@ -1302,7 +1296,6 @@ class R201Service:
             },
             "deviation_opened",
             {
-                "deviation_no": deviation_no,
                 "description": data["description"],
                 "severity": severity,
             },
@@ -1312,7 +1305,6 @@ class R201Service:
             {
                 **data,
                 "severity": severity,
-                "deviation_no": deviation_no,
                 "opened_at_ms": data.get(
                     "opened_at_ms", event["effective_at_ms"]
                 ),
@@ -1331,6 +1323,7 @@ class R201Service:
                 "reviewed_by",
                 "impact_assessment",
                 "disposition",
+                "row_version",
             ),
         )
         existing_event = self._idempotent_event(
@@ -1370,13 +1363,12 @@ class R201Service:
             raise R201Error(
                 "disposition must be continue, rework, or terminate"
             )
+        expected_version = data["row_version"]
+        self._check_version(experiment, expected_version)
         experiment_updates = None
         supersede_step_codes: tuple[str, ...] = ()
-        expected_version = None
         if data["disposition"] == "rework":
-            self._require_fields(data, ("row_version", "rework_step_code"))
-            expected_version = data["row_version"]
-            self._check_version(experiment, expected_version)
+            self._require_fields(data, ("rework_step_code",))
             rework_step = str(data["rework_step_code"])
             if rework_step not in MAIN_STEPS:
                 raise R201Error("rework_step_code must be an R-201 main step")
@@ -1397,9 +1389,6 @@ class R201Service:
                 "completed_effective_at_ms": None,
             }
         elif data["disposition"] == "terminate":
-            self._require_fields(data, ("row_version",))
-            expected_version = data["row_version"]
-            self._check_version(experiment, expected_version)
             active = self.store.get_active_step(experiment_id)
             supersede_step_codes = (
                 (active["step_code"],) if active is not None else ()
@@ -1481,6 +1470,7 @@ class R201Service:
                 expected_version,
                 updates,
                 event,
+                require_no_open_deviations=True,
             )
         except RuntimeError as exc:
             raise R201Error(str(exc), 409) from exc
@@ -1517,6 +1507,14 @@ class R201Service:
         if action == "release":
             if not disposition:
                 raise R201Error("disposition is required for release")
+            if any(
+                item["status"] != "closed"
+                for item in self.store.list_deviations(experiment_id)
+            ):
+                raise R201Error(
+                    "仍有未处置的异常，不能发布实验记录",
+                    409,
+                )
             updates = {
                 "status": "released",
                 "disposition": disposition,
@@ -1541,7 +1539,11 @@ class R201Service:
         )
         try:
             return self.store.transition_experiment(
-                experiment_id, expected_version, updates, event
+                experiment_id,
+                expected_version,
+                updates,
+                event,
+                require_no_open_deviations=(action == "release"),
             )
         except RuntimeError as exc:
             raise R201Error(str(exc), 409) from exc
@@ -1889,8 +1891,29 @@ class R201Service:
         occurred = data.get("occurred_at_client_ms")
         clock_status = data.get("clock_sync_status", "unknown")
         offset = data.get("client_clock_offset_ms")
+        if clock_status not in ("trusted", "untrusted", "unknown", "server"):
+            raise R201Error("clock_sync_status is invalid")
+        if occurred is not None:
+            occurred = self._integer(
+                occurred, "occurred_at_client_ms"
+            )
+        if offset is not None:
+            offset = self._integer(
+                offset, "client_clock_offset_ms"
+            )
         if occurred is not None and clock_status == "trusted":
-            effective = int(occurred) - int(offset or 0)
+            if offset is None:
+                raise R201Error(
+                    "client_clock_offset_ms is required for trusted clock"
+                )
+            corrected = occurred - offset
+            earliest = received - 24 * 60 * 60 * 1000
+            latest = received + 24 * 60 * 60 * 1000
+            if earliest <= corrected <= latest:
+                effective = corrected
+            else:
+                clock_status = "untrusted"
+                effective = received
         else:
             effective = received
         return {
@@ -1980,10 +2003,29 @@ class R201Service:
 
     @staticmethod
     def _number(value, field: str) -> float:
+        if isinstance(value, bool):
+            raise R201Error(f"{field} must be numeric")
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError) as exc:
             raise R201Error(f"{field} must be numeric") from exc
+        if not math.isfinite(number):
+            raise R201Error(f"{field} must be finite")
+        return number
+
+    @staticmethod
+    def _integer(value, field: str) -> int:
+        if isinstance(value, bool):
+            raise R201Error(f"{field} must be an integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise R201Error(f"{field} must be an integer") from exc
+        if isinstance(value, float) and not value.is_integer():
+            raise R201Error(f"{field} must be an integer")
+        if isinstance(value, str) and str(number) != value.strip():
+            raise R201Error(f"{field} must be an integer")
+        return number
 
     def _validate_step_result(self, step_code: str, result: dict):
         true_fields = {
@@ -2269,10 +2311,6 @@ class R201Service:
     def _record_telemetry_gap_deviations(
         self, experiment: dict, active: dict, gaps: list[dict]
     ):
-        existing_count = len(
-            self.store.list_deviations(experiment["id"])
-        )
-        created_count = 0
         for gap in gaps:
             event_id = (
                 f"derived-telemetry-gap-{experiment['id']}-"
@@ -2281,11 +2319,6 @@ class R201Service:
             )
             if self.store.get_event_by_client_id(event_id) is not None:
                 continue
-            created_count += 1
-            deviation_no = (
-                f"{experiment['batch_id']}-DEV-"
-                f"{existing_count + created_count:02d}"
-            )
             event = {
                 "client_event_id": event_id,
                 "event_type": "deviation_opened",
@@ -2297,7 +2330,6 @@ class R201Service:
                 "actor": "system",
                 "source_type": "derived",
                 "payload": {
-                    "deviation_no": deviation_no,
                     "rule_code": "REACTION_TEMP_TELEMETRY_GAP",
                     "started_at_ms": gap["started_at_ms"],
                     "ended_at_ms": gap["ended_at_ms"],
@@ -2307,7 +2339,6 @@ class R201Service:
             self.store.add_deviation(
                 experiment["id"],
                 {
-                    "deviation_no": deviation_no,
                     "step_instance_id": active["id"],
                     "opened_at_ms": gap["ended_at_ms"],
                     "status": "open",

@@ -36,7 +36,12 @@ class ModbusError(Exception):
         super().__init__(f"Modbus exception slave={slave} fc=0x{fc:02x} code=0x{code:02x}")
 
 
-def parse_response(frame: bytes, slave: int, fc: int) -> bytes:
+def parse_response(
+    frame: bytes,
+    slave: int,
+    fc: int,
+    expected_data_bytes: int | None = None,
+) -> bytes:
     """Validate CRC/address/fc; return payload data bytes."""
     if len(frame) < 5:
         raise ValueError(f"short frame ({len(frame)}b): {frame.hex()}")
@@ -52,7 +57,17 @@ def parse_response(frame: bytes, slave: int, fc: int) -> bytes:
         raise ModbusError(slave, got_fc & 0x7F, code)
     if got_fc != fc:
         raise ValueError(f"fc mismatch got=0x{got_fc:02x} want=0x{fc:02x}")
-    return payload[3:]
+    byte_count = payload[2]
+    data = payload[3:]
+    if len(data) != byte_count:
+        raise ValueError(
+            f"byte count mismatch got={len(data)} declared={byte_count}"
+        )
+    if expected_data_bytes is not None and byte_count != expected_data_bytes:
+        raise ValueError(
+            f"response length mismatch got={byte_count} expected={expected_data_bytes}"
+        )
+    return data
 
 
 class Transport(Protocol):
@@ -89,7 +104,13 @@ class ModbusClient:
                 break
         if not buf:
             raise TimeoutError("no Modbus response within read_timeout")
-        return parse_response(bytes(buf), self.slave, request[1])
+        register_count = int.from_bytes(request[4:6], "big")
+        return parse_response(
+            bytes(buf),
+            self.slave,
+            request[1],
+            expected_data_bytes=register_count * 2,
+        )
 
     def read_input_registers(self, reg: int, count: int) -> bytes:
         return self.transact(build_read_request(self.slave, FC_READ_INPUT, reg, count))
@@ -119,7 +140,7 @@ class SerialTransport:
         self._ser = None
 
     def open(self) -> None:
-        self._ser = serial.Serial(
+        opened = serial.Serial(
             port=self.port,
             baudrate=self.baudrate,
             parity=_parity_code(self.parity),
@@ -130,8 +151,14 @@ class SerialTransport:
             rtscts=False,
             dsrdtr=False,
         )
-        self._ser.reset_input_buffer()
-        self._ser.reset_output_buffer()
+        self._ser = opened
+        try:
+            opened.reset_input_buffer()
+            opened.reset_output_buffer()
+        except Exception:
+            opened.close()
+            self._ser = None
+            raise
 
     def write(self, data: bytes) -> None:
         assert self._ser is not None

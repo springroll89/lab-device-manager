@@ -29,6 +29,7 @@ from lab_device_manager.instruments.base import StatusSnapshot
 HEADER = b"\xd6\xc8\x18\x32"
 TRAILER = 0x40
 FRAME_LEN = 28
+MAX_BUFFER_BYTES = FRAME_LEN * 2
 
 
 def parse_viscometer_frame(frame: bytes) -> dict:
@@ -99,11 +100,13 @@ class ViscometerAdapter:
             if not chunk:
                 break
             self._buffer.extend(chunk)
+            if len(self._buffer) > MAX_BUFFER_BYTES:
+                del self._buffer[:-MAX_BUFFER_BYTES]
         frame, remaining = extract_latest_frame(bytes(self._buffer))
         if frame is None:
             return StatusSnapshot(timestamp=time.time(), state="offline",
                                   work_mode="", device_id="Fangrui Viscometer")
-        self._buffer = bytearray(remaining)
+        self._buffer = bytearray(remaining[-MAX_BUFFER_BYTES:])
         return self._to_snapshot(frame)
 
     def _to_snapshot(self, frame: bytes) -> StatusSnapshot:

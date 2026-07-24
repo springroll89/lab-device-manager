@@ -65,7 +65,10 @@ class RunDetector:
         elif new == "stopped" and self._run_id is not None:
             end_status = "alarm_abort" if self._had_alarm else "completed"
             closed = self._run_id
-            actual = (snap.acc_volume or 0.0) - self._lifetime_start
+            ending_acc = (
+                snap.acc_volume if snap.acc_volume is not None else 0.0
+            )
+            actual = ending_acc - self._lifetime_start
             self.repo.close_run(closed, now_ms, end_status,
                                 actual, snap.acc_unit,
                                 snap.acc_volume, snap.acc_unit, self._alarm_count)

@@ -140,6 +140,43 @@ class ExperimentStore:
                 self.add_experiment_event(
                     cursor.lastrowid, event, connection=conn
                 )
+            trace_cursor = conn.execute(
+                """INSERT INTO trace_item(
+                     experiment_id, item_code, item_type, display_name,
+                     source_step_code, sequence_no, status, quantity, unit,
+                     creation_group_id, creation_index, created_at_ms,
+                     updated_at_ms, created_by)
+                   VALUES(?,?, 'batch', ?, NULL, 1, 'active', NULL, NULL,
+                          ?, 1, ?, ?, ?)""",
+                (
+                    cursor.lastrowid,
+                    data["batch_id"],
+                    f"{data['membrane_system']} 实验批次",
+                    f"trace-batch-{cursor.lastrowid}",
+                    now_ms,
+                    now_ms,
+                    data["operator"],
+                ),
+            )
+            conn.execute(
+                """INSERT INTO trace_event(
+                     client_event_id, experiment_id, trace_item_id,
+                     event_type, effective_at_ms, actor, payload_json)
+                   VALUES(?,?,?,'created',?,?,?)""",
+                (
+                    f"trace-batch-created-{cursor.lastrowid}",
+                    cursor.lastrowid,
+                    trace_cursor.lastrowid,
+                    event["effective_at_ms"] if event is not None else now_ms,
+                    event["actor"] if event is not None else data["operator"],
+                    _json(
+                        {
+                            "item_code": data["batch_id"],
+                            "item_type": "batch",
+                        }
+                    ),
+                ),
+            )
         return self._experiment(row)
 
     def get_experiment(self, experiment_id: int) -> Optional[dict]:
@@ -256,7 +293,7 @@ class ExperimentStore:
                 ),
             )
             new_version = expected_version + 1
-            conn.execute(
+            updated = conn.execute(
                 """UPDATE experiment SET status='in_progress', row_version=?,
                      started_effective_at_ms=COALESCE(started_effective_at_ms, ?),
                      updated_at_ms=? WHERE id=? AND row_version=?""",
@@ -268,6 +305,8 @@ class ExperimentStore:
                     expected_version,
                 ),
             )
+            if updated.rowcount != 1:
+                raise RuntimeError("row version conflict")
             self.add_experiment_event(
                 experiment_id, event, cursor.lastrowid, connection=conn
             )
@@ -333,12 +372,21 @@ class ExperimentStore:
             for deviation in deviations or []:
                 deviation_data = dict(deviation)
                 deviation_data["step_instance_id"] = step_row["id"]
+                deviation_data["deviation_no"] = self._next_deviation_no(
+                    conn, experiment_id
+                )
+                deviation_event = dict(deviation_data["event"])
+                deviation_event["payload"] = {
+                    **(deviation_event.get("payload") or {}),
+                    "deviation_no": deviation_data["deviation_no"],
+                }
+                deviation_data["event"] = deviation_event
                 created_deviations.append(
                     self._insert_deviation(conn, experiment_id, deviation_data)
                 )
                 self.add_experiment_event(
                     experiment_id,
-                    deviation_data["event"],
+                    deviation_event,
                     step_row["id"],
                     connection=conn,
                 )
@@ -1144,16 +1192,73 @@ class ExperimentStore:
         ).fetchone()
         return dict(row)
 
+    @staticmethod
+    def _next_deviation_no(
+        conn: sqlite3.Connection, experiment_id: int
+    ) -> str:
+        experiment = conn.execute(
+            "SELECT batch_id FROM experiment WHERE id=?",
+            (experiment_id,),
+        ).fetchone()
+        if experiment is None:
+            raise LookupError("experiment not found")
+        rows = conn.execute(
+            "SELECT deviation_no FROM deviation WHERE experiment_id=?",
+            (experiment_id,),
+        ).fetchall()
+        prefix = f"{experiment['batch_id']}-DEV-"
+        sequence = 0
+        for row in rows:
+            number = str(row["deviation_no"])
+            suffix = number[len(prefix):] if number.startswith(prefix) else ""
+            if suffix.isdigit():
+                sequence = max(sequence, int(suffix))
+        return f"{prefix}{sequence + 1:02d}"
+
     def add_deviation(
         self, experiment_id: int, data: dict, event: Optional[dict] = None
     ) -> dict:
         with self.transaction() as conn:
-            created = self._insert_deviation(conn, experiment_id, data)
+            if event is not None:
+                existing_event = conn.execute(
+                    """SELECT payload_json FROM experiment_event
+                       WHERE client_event_id=?""",
+                    (event["client_event_id"],),
+                ).fetchone()
+                if existing_event is not None:
+                    try:
+                        payload = json.loads(
+                            existing_event["payload_json"] or "{}"
+                        )
+                    except (TypeError, json.JSONDecodeError):
+                        payload = {}
+                    existing = conn.execute(
+                        "SELECT * FROM deviation WHERE deviation_no=?",
+                        (payload.get("deviation_no"),),
+                    ).fetchone()
+                    if existing is None:
+                        raise RuntimeError(
+                            "idempotent deviation result is unavailable"
+                        )
+                    return dict(existing)
+            deviation_data = dict(data)
+            deviation_data["deviation_no"] = self._next_deviation_no(
+                conn, experiment_id
+            )
+            if event is not None:
+                event = dict(event)
+                event["payload"] = {
+                    **(event.get("payload") or {}),
+                    "deviation_no": deviation_data["deviation_no"],
+                }
+            created = self._insert_deviation(
+                conn, experiment_id, deviation_data
+            )
             if event is not None:
                 self.add_experiment_event(
                     experiment_id,
                     event,
-                    data.get("step_instance_id"),
+                    deviation_data.get("step_instance_id"),
                     connection=conn,
                 )
         return created
@@ -1191,15 +1296,18 @@ class ExperimentStore:
             ).fetchone()
             if current is None:
                 raise LookupError("deviation not found")
+            experiment = conn.execute(
+                "SELECT * FROM experiment WHERE id=?",
+                (experiment_id,),
+            ).fetchone()
+            if experiment is None:
+                raise LookupError("experiment not found")
+            if (
+                expected_version is None
+                or experiment["row_version"] != expected_version
+            ):
+                raise RuntimeError("row version conflict")
             if experiment_updates:
-                experiment = conn.execute(
-                    "SELECT * FROM experiment WHERE id=?",
-                    (experiment_id,),
-                ).fetchone()
-                if experiment is None:
-                    raise LookupError("experiment not found")
-                if experiment["row_version"] != expected_version:
-                    raise RuntimeError("row version conflict")
                 if supersede_step_codes:
                     placeholders = ",".join(
                         "?" for _ in supersede_step_codes
@@ -1280,6 +1388,7 @@ class ExperimentStore:
         expected_version: int,
         updates: dict,
         event: dict,
+        require_no_open_deviations: bool = False,
     ) -> dict:
         allowed = {
             "status",
@@ -1296,6 +1405,16 @@ class ExperimentStore:
                 raise LookupError("experiment not found")
             if current["row_version"] != expected_version:
                 raise RuntimeError("row version conflict")
+            if require_no_open_deviations:
+                open_deviation = conn.execute(
+                    """SELECT 1 FROM deviation
+                       WHERE experiment_id=? AND status!='closed' LIMIT 1""",
+                    (experiment_id,),
+                ).fetchone()
+                if open_deviation is not None:
+                    raise RuntimeError(
+                        "open deviations must be assessed and closed"
+                    )
             values = [updates[key] for key in columns]
             sets = [f"{key}=?" for key in columns]
             sets.extend(["row_version=?", "updated_at_ms=?"])

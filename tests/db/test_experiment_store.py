@@ -72,6 +72,9 @@ def test_experiment_store_creates_and_lists_experiment():
     assert created["validation_mode"] == "parallel_validation"
     assert repo.experiments.get_experiment(created["id"])["operator"] == "张三"
     assert [row["id"] for row in repo.experiments.list_experiments()] == [created["id"]]
+    trace_items = repo.experiments.list_trace_items(created["id"])
+    assert len(trace_items) == 1
+    assert trace_items[0]["item_code"] == created["batch_id"]
 
 
 def test_experiment_batch_id_is_unique():

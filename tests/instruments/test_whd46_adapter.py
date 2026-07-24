@@ -1,6 +1,7 @@
 import struct
 import pytest
 from lab_device_manager.instruments.whd46_33 import WHD46Adapter, _raw_to_value
+from lab_device_manager.instruments.whd46.protocol import decode_channels
 
 
 def u16(v):
@@ -75,3 +76,8 @@ def test_read_status_includes_channels_list():
 def test_temp_c_is_average():
     s = _adapter(ch1_temp=20.0, ch2_temp=25.0, ch3_temp=30.0).read_status()
     assert s.temp_c == 25.0
+
+
+def test_short_channel_response_is_rejected():
+    with pytest.raises(ValueError, match="数据长度错误"):
+        decode_channels(_temp_humid_bytes(25.0, 50.0))

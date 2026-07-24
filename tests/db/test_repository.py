@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from lab_device_manager.db.repository import Repository
 from lab_device_manager.db.models import Run
 
@@ -172,3 +173,20 @@ def test_list_runs_filtered_by_tagged():
     assert [x.id for x in rows] == [r1]
     rows = r.list_runs(tagged=False)
     assert [x.id for x in rows] == [r2]
+
+
+def test_concurrent_sample_and_event_writes_share_one_connection_safely():
+    r = make_repo()
+    did = r.upsert_device("pump-1", "tyd02")
+    rid = r.open_run(did, 1, 1751000000_000, {})
+
+    def write_pair(index):
+        ts_ms = 1751000000_000 + index
+        r.add_sample(rid, did, ts_ms, "running", 1.0, 1.0, 25.0, "{}")
+        r.add_event(did, rid, ts_ms, "sampled", "info", "{}")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(write_pair, range(100)))
+
+    assert len(r.list_samples_for_run(rid)) == 100
+    assert len(r.list_events_for_run(rid)) == 100

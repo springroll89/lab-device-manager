@@ -17,9 +17,8 @@ class Repository:
 
     def __init__(self, db_path: str):
         # check_same_thread=False: the Engine drives Samplers on background threads,
-        # and RunDetector writes to this connection from those threads. SQLite
-        # serializes writes internally; the GIL plus per-statement commit() keeps
-        # single-writer access safe.
+        # and RunDetector writes to this connection from those threads. All
+        # multi-statement write operations are serialized with _lock below.
         database_path = None if db_path == ":memory:" else Path(db_path)
         existing_database = bool(
             database_path
@@ -122,69 +121,74 @@ class Repository:
             pass
 
     def upsert_device(self, name: str, device_type: str, alias: str = "") -> int:
-        row = self._conn.execute("SELECT id FROM device WHERE name=?", (name,)).fetchone()
-        if row:
-            if alias:
-                self._conn.execute("UPDATE device SET alias=? WHERE id=?", (alias, row["id"]))
-                self._conn.commit()
-            return row["id"]
-        from time import strftime
-        c = self._conn.execute(
-            "INSERT INTO device(name, device_type, alias, created_at) VALUES(?,?,?,?)",
-            (name, device_type, alias, strftime("%Y-%m-%dT%H:%M:%S")),
-        )
-        self._conn.commit()
-        return c.lastrowid
+        with self._lock:
+            row = self._conn.execute("SELECT id FROM device WHERE name=?", (name,)).fetchone()
+            if row:
+                if alias:
+                    self._conn.execute("UPDATE device SET alias=? WHERE id=?", (alias, row["id"]))
+                    self._conn.commit()
+                return row["id"]
+            from time import strftime
+            c = self._conn.execute(
+                "INSERT INTO device(name, device_type, alias, created_at) VALUES(?,?,?,?)",
+                (name, device_type, alias, strftime("%Y-%m-%dT%H:%M:%S")),
+            )
+            self._conn.commit()
+            return c.lastrowid
 
     def open_run(self, device_id: int, channel: int, started_ms: int,
                  setpoints: dict) -> int:
-        c = self._conn.execute(
-            """INSERT INTO run(device_id, channel, started_ms,
-                  setpoints_json, operator, project_tag, experiment_tag,
-                  work_mode, target_volume, target_volume_unit)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (device_id, channel, started_ms,
-             json.dumps(setpoints, ensure_ascii=False),
-             setpoints.get("operator"),
-             setpoints.get("project_tag"),
-             setpoints.get("experiment_tag"),
-             setpoints.get("work_mode"),
-             setpoints.get("target_volume"),
-             setpoints.get("target_volume_unit")),
-        )
-        self._conn.commit()
-        return c.lastrowid
+        with self._lock:
+            c = self._conn.execute(
+                """INSERT INTO run(device_id, channel, started_ms,
+                      setpoints_json, operator, project_tag, experiment_tag,
+                      work_mode, target_volume, target_volume_unit)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (device_id, channel, started_ms,
+                 json.dumps(setpoints, ensure_ascii=False),
+                 setpoints.get("operator"),
+                 setpoints.get("project_tag"),
+                 setpoints.get("experiment_tag"),
+                 setpoints.get("work_mode"),
+                 setpoints.get("target_volume"),
+                 setpoints.get("target_volume_unit")),
+            )
+            self._conn.commit()
+            return c.lastrowid
 
     def close_run(self, run_id: int, ended_ms: int, end_status: str,
                   actual_volume: Optional[float], actual_unit: Optional[str],
                   lifetime_acc: Optional[float], lifetime_acc_unit: Optional[str],
                   alarm_count: int):
-        self._conn.execute(
-            """UPDATE run SET ended_ms=?, duration_ms=?-started_ms, end_status=?,
-                  result_acc_volume=?, result_acc_unit=?, actual_volume=?, actual_unit=?, alarm_count=? WHERE id=?""",
-            (ended_ms, ended_ms, end_status, lifetime_acc, lifetime_acc_unit,
-             actual_volume, actual_unit, alarm_count, run_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE run SET ended_ms=?, duration_ms=?-started_ms, end_status=?,
+                      result_acc_volume=?, result_acc_unit=?, actual_volume=?, actual_unit=?, alarm_count=? WHERE id=?""",
+                (ended_ms, ended_ms, end_status, lifetime_acc, lifetime_acc_unit,
+                 actual_volume, actual_unit, alarm_count, run_id),
+            )
+            self._conn.commit()
 
     def add_sample(self, run_id: Optional[int], device_id: int, ts_ms: int,
                    state: str, flow_rate: Optional[float],
                    delivered_volume: Optional[float], temp_c: Optional[float],
                    metrics_json: str):
-        self._conn.execute(
-            """INSERT INTO sample(run_id, device_id, ts_ms, state, flow_rate,
-                  delivered_volume, temp_c, metrics_json) VALUES(?,?,?,?,?,?,?,?)""",
-            (run_id, device_id, ts_ms, state, flow_rate, delivered_volume, temp_c, metrics_json),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO sample(run_id, device_id, ts_ms, state, flow_rate,
+                      delivered_volume, temp_c, metrics_json) VALUES(?,?,?,?,?,?,?,?)""",
+                (run_id, device_id, ts_ms, state, flow_rate, delivered_volume, temp_c, metrics_json),
+            )
+            self._conn.commit()
 
     def add_event(self, device_id: int, run_id: Optional[int], ts_ms: int,
                   event_type: str, severity: str, detail_json: str):
-        self._conn.execute(
-            "INSERT INTO event(device_id, run_id, ts_ms, event_type, severity, detail_json) VALUES(?,?,?,?,?,?)",
-            (device_id, run_id, ts_ms, event_type, severity, detail_json),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO event(device_id, run_id, ts_ms, event_type, severity, detail_json) VALUES(?,?,?,?,?,?)",
+                (device_id, run_id, ts_ms, event_type, severity, detail_json),
+            )
+            self._conn.commit()
 
     def list_runs(self, limit: int = 50, offset: int = 0, device_id: Optional[int] = None,
                   operator: Optional[str] = None, project_tag: Optional[str] = None,
@@ -262,12 +266,13 @@ class Repository:
 
     def tag_run(self, run_id: int, operator: str, project_tag: str,
                 experiment_tag: str, remark: str):
-        self._conn.execute(
-            """UPDATE run SET operator=?, project_tag=?, experiment_tag=?,
-                  remark=?, tagged=1 WHERE id=?""",
-            (operator, project_tag, experiment_tag, remark, run_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE run SET operator=?, project_tag=?, experiment_tag=?,
+                      remark=?, tagged=1 WHERE id=?""",
+                (operator, project_tag, experiment_tag, remark, run_id),
+            )
+            self._conn.commit()
 
     def list_recent_events(self, device_id: Optional[int] = None,
                            limit: int = 50) -> list:

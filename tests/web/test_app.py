@@ -62,6 +62,15 @@ def test_runs_and_tag(tmp_path):
     assert app.test_client().get("/api/runs/untagged").get_json() == []
 
 
+def test_tag_missing_run_returns_404(tmp_path):
+    app, repo, did = _app(tmp_path)
+    response = app.test_client().post(
+        "/api/runs/99999/tag",
+        json={"operator": "alice"},
+    )
+    assert response.status_code == 404
+
+
 def test_runs_csv_export(tmp_path):
     app, repo, did = _app(tmp_path)
     rid = repo.open_run(did, 1, 1751000000_000, {})
@@ -280,6 +289,36 @@ def test_runs_export_xlsx(tmp_path):
     ws = wb["runs"]
     assert ws.cell(row=1, column=1).value == "id"
     assert any(ws.cell(row=row, column=1).value == rid for row in range(2, ws.max_row + 1))
+
+
+def test_runs_export_xlsx_rejects_invalid_numeric_filters(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+    assert client.get("/api/runs/export.xlsx?limit=abc").status_code == 400
+    assert client.get("/api/runs/export.xlsx?offset=-1").status_code == 400
+    assert client.get("/api/runs/export.xlsx?device_id=abc").status_code == 400
+
+
+def test_directory_browser_rejects_paths_outside_storage_roots(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    app, repo, did = _app(tmp_path)
+    response = app.test_client().get(
+        "/api/browse-directory?path=/etc"
+    )
+    assert response.status_code == 400
+
+
+def test_directory_browser_lists_workspace_root(tmp_path, monkeypatch):
+    (tmp_path / "exports").mkdir()
+    monkeypatch.chdir(tmp_path)
+    app, repo, did = _app(tmp_path)
+    response = app.test_client().get(
+        f"/api/browse-directory?path={tmp_path}"
+    )
+    assert response.status_code == 200
+    assert "exports" in response.get_json()["directories"]
 
 
 def test_run_samples_endpoint(tmp_path):

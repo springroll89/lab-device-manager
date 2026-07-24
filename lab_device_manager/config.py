@@ -32,7 +32,10 @@ class Config:
     login_password: str = ""
 
 
-def load_config(path: str = "config.toml") -> Config:
+def load_config(path: str | None = None) -> Config:
+    if path is None:
+        local_path = pathlib.Path("config.local.toml")
+        path = str(local_path if local_path.exists() else "config.toml")
     with open(path, "rb") as f:
         d = tomllib.load(f)
     if "devices" in d and not isinstance(d["devices"], list):
