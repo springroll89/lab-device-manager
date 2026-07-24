@@ -413,6 +413,30 @@ def test_account_creation_keeps_stable_form_reference(tmp_path):
     assert b"event.currentTarget.reset()" not in script.data
 
 
+def test_authenticated_pages_share_account_menu_entry(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    menu_script = client.get("/static/account-menu.js")
+    assert menu_script.status_code == 200
+    assert b'addMenuLink(panel, "/change-password", "' in menu_script.data
+    assert b"session.can_manage_accounts" in menu_script.data
+    assert b'addMenuLink(panel, "/accounts", "' in menu_script.data
+
+    for page in (
+        "index.html",
+        "device.html",
+        "run.html",
+        "sensor.html",
+        "experiment.html",
+        "accounts.html",
+    ):
+        response = client.get(f"/static/{page}")
+        assert response.status_code == 200
+        assert b"data-account-menu" in response.data
+        assert b"/static/account-menu.js" in response.data
+
+
 def _authenticated_app(tmp_path):
     return _app(tmp_path, auth_bypass=False)
 

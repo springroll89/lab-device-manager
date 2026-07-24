@@ -61,8 +61,6 @@ async function loadAccountSession() {
     location.replace("/experiments");
     return false;
   }
-  document.getElementById("accountIdentity").textContent =
-    `${accountState.session.role_label} · ${accountState.session.operator}`;
   document.getElementById("permissionSummary").textContent =
     accountState.session.role === "super_admin"
       ? "最高管理员可以创建实验室主管和操作员，并管理所有下级账号。"
