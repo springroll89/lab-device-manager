@@ -38,6 +38,7 @@ class Run:
     actual_unit: Optional[str]
     alarm_count: int
     setpoints_json: Optional[str] = None
+    operator_user_id: Optional[int] = None
 
 
 @dataclass(frozen=True)

@@ -92,12 +92,15 @@ def _capture(
                 "age_ms": 0,
                 "snapshot": {
                     "state": "running",
+                    "work_mode": "仅注入",
                     "ts_ms": 1_000_000,
                     "acc_volume": pump_volume,
                     "acc_unit": "mL",
                     "metrics": {
                         "inject_rate": pump_rate,
+                        "inject_rate_unit": "mL/min",
                         "target_volume": pump_target,
+                        "target_unit": "mL",
                         "syringe_code": "10 mL",
                     },
                 },
@@ -135,6 +138,7 @@ def _capture(
                         "torque_pct": torque,
                         "rotor": "18",
                         "rpm": 60,
+                        "data_verified": True,
                     },
                 },
             }
@@ -714,6 +718,167 @@ def test_viscosity_button_can_capture_complete_device_reading():
         ]["device_name"]
         == "粘度计"
     )
+
+
+def test_unverified_viscometer_reading_cannot_be_device_confirmed():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+    _advance_to_aging(service, exp["id"])
+    capture = _capture(viscosity=5.4)
+    capture["devices"][-1]["snapshot"]["metrics"]["data_verified"] = False
+
+    with pytest.raises(R201Error, match="viscosity_mpas is required"):
+        service.record_viscosity(
+            exp["id"],
+            {
+                **_event("unverified-device-viscosity", 1),
+                "device_capture": capture,
+            },
+        )
+
+
+def test_account_id_not_duplicate_display_name_controls_operator_access():
+    service, repo = _service()
+    repo._conn.executemany(
+        """INSERT INTO user_account(
+             username, display_name, password_hash, role, is_active,
+             must_change_password, created_at_ms, updated_at_ms)
+           VALUES(?, '同名操作员', 'x', 'operator', 1, 0, 1, 1)""",
+        [("operator-a",), ("operator-b",)],
+    )
+    repo._conn.commit()
+    exp = service.create_experiment(
+        {
+            **CREATE,
+            "operator": "同名操作员",
+            "operator_user_id": 1,
+            "reviewer": "",
+        }
+    )
+
+    with pytest.raises(R201Error, match="当前账号不是本批指定操作员"):
+        service.start_step(
+            exp["id"],
+            "R201-01",
+            exp["row_version"],
+            {
+                **_event("same-name-other-account", 1),
+                "actor": "同名操作员",
+                "actor_user_id": 2,
+            },
+        )
+
+
+def test_tyd_units_are_converted_to_ml_and_wrong_mode_is_not_captured():
+    capture = _capture(pump_volume=5000, pump_rate=1000, pump_target=5000)
+    pump = capture["devices"][0]
+    pump["snapshot"]["acc_unit"] = "uL"
+    pump["snapshot"]["metrics"]["target_unit"] = "uL"
+    pump["snapshot"]["metrics"]["inject_rate_unit"] = "uL/min"
+
+    assert R201Service._volume_ml(5000, "uL") == pytest.approx(5)
+    assert R201Service._rate_ml_min(1000, "uL/min") == pytest.approx(1)
+    assert (
+        R201Service._capture_device(capture, "tyd02", "acid_pump")
+        is pump
+    )
+    pump["snapshot"]["work_mode"] = "仅抽取"
+    assert (
+        R201Service._capture_device(capture, "tyd02", "acid_pump")
+        is None
+    )
+
+
+def test_r201_30_preview_applies_tyd_unit_conversion():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+    for index, step in enumerate(
+        ("R201-01", "R201-02", "R201-03", "R201-04", "R201-10", "R201-20")
+    ):
+        state = service.get_experiment(exp["id"])["experiment"]
+        service.start_step(
+            exp["id"], step, state["row_version"], _event("unit-start", index)
+        )
+        state = service.get_experiment(exp["id"])["experiment"]
+        service.complete_step(
+            exp["id"],
+            step,
+            state["row_version"],
+            VALID_RESULTS[step],
+            _event("unit-complete", index),
+        )
+    state = service.get_experiment(exp["id"])["experiment"]
+    service.start_step(
+        exp["id"], "R201-30", state["row_version"], _event("unit-r30", 1)
+    )
+    state = service.get_experiment(exp["id"])["experiment"]
+    capture = _capture(
+        pump_volume=5000,
+        pump_rate=1000,
+        pump_target=5000,
+        stirrer_temp=3,
+    )
+    pump = capture["devices"][0]["snapshot"]
+    pump["acc_unit"] = "uL"
+    pump["metrics"]["target_unit"] = "uL"
+    pump["metrics"]["inject_rate_unit"] = "uL/min"
+    preview = service.preview_step_completion(
+        exp["id"],
+        "R201-30",
+        state["row_version"],
+        {"ice_bath_confirmed": True, "line_purged": True},
+        {
+            **_event("unit-r30-preview", 1),
+            "device_capture": capture,
+        },
+    )
+
+    assert preview["missing_fields"] == []
+    assert preview["result"]["target_volume_ml"] == pytest.approx(5)
+    assert preview["result"]["target_rate_ml_min"] == pytest.approx(1)
+
+
+def test_rework_invalidates_previous_viscosity_endpoint():
+    service, _ = _service()
+    exp = service.create_experiment({**CREATE, "reviewer": ""})
+    _advance_to_aging(service, exp["id"])
+    for index, value in enumerate((5.0, 5.2), start=1):
+        service.record_viscosity(
+            exp["id"],
+            {
+                **_event("visc-before-rework", index),
+                "viscosity_mpas": value,
+                "sample_temp_c": 25,
+                "reaction_temp_c": 40,
+                "rotor": "18",
+                "rpm": 60,
+                "torque_pct": 50,
+            },
+        )
+    assert service.get_experiment(exp["id"])["endpoint_ready"] is True
+    deviation = service.open_deviation(
+        exp["id"],
+        {
+            **_event("visc-rework-deviation", 1),
+            "description": "粘度阶段需要返工",
+            "opened_by": "张三",
+        },
+    )
+    state = service.get_experiment(exp["id"])["experiment"]
+    service.resolve_deviation(
+        exp["id"],
+        deviation["id"],
+        {
+            **_event("visc-rework-resolve", 1),
+            "reviewed_by": "张三",
+            "impact_assessment": "重新老化并测量",
+            "disposition": "rework",
+            "rework_step_code": "R201-50",
+            "row_version": state["row_version"],
+        },
+    )
+
+    assert service.get_experiment(exp["id"])["endpoint_ready"] is False
 
 
 def test_invalid_torque_does_not_count_toward_endpoint():
@@ -1392,6 +1557,54 @@ def test_telemetry_gap_generates_one_idempotent_deviation_candidate():
     assert [event["event_type"] for event in detail["events"]].count(
         "deviation_opened"
     ) == 1
+
+
+def test_telemetry_integrity_uses_samples_older_than_latest_thousand():
+    service, repo = _service()
+    exp = service.create_experiment(
+        {
+            **CREATE,
+            "spec_snapshot": {
+                **CREATE["spec_snapshot"],
+                "telemetry_gap_threshold_ms": 300_000,
+            },
+        }
+    )
+    _advance_to_aging(service, exp["id"])
+    active = service.get_experiment(exp["id"])["active_step"]
+    device_id = repo.upsert_device("whd-long-run", "whd46", "反应温度")
+    service.add_data_source(
+        exp["id"],
+        {
+            **_event("bind-long-temp", 1),
+            "device_id": device_id,
+            "step_instance_id": active["id"],
+            "device_role": "reaction_temp",
+            "metric_key": "ch2_temp_c",
+            "channel_selector": "2",
+            "linked_at_ms": active["started_effective_at_ms"],
+            "link_method": "manual",
+        },
+    )
+    start = active["started_effective_at_ms"]
+    timestamps = [start, start + 400_000]
+    timestamps.extend(start + 400_000 + i * 1_000 for i in range(1, 1102))
+    for ts_ms in timestamps:
+        repo.add_sample(
+            None,
+            device_id,
+            ts_ms,
+            "running",
+            None,
+            None,
+            40.0,
+            json.dumps({"ch2_temp_c": 40.0}),
+        )
+
+    detail = service.get_experiment(exp["id"])
+
+    assert len(detail["temperature_series"]) == len(timestamps)
+    assert len(detail["telemetry_gaps"]) == 1
 
 
 def test_telemetry_derived_writes_roll_back_together(monkeypatch):

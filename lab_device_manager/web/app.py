@@ -60,7 +60,9 @@ def _run_to_dict(run):
         "id": run.id, "device_id": run.device_id,
         "started_ms": run.started_ms, "ended_ms": run.ended_ms,
         "duration_ms": run.duration_ms, "end_status": run.end_status,
-        "operator": run.operator, "project_tag": run.project_tag,
+        "operator": run.operator,
+        "operator_user_id": run.operator_user_id,
+        "project_tag": run.project_tag,
         "tagged": run.tagged, "alarm_count": run.alarm_count,
         "result_acc_volume": run.result_acc_volume, "result_acc_unit": run.result_acc_unit,
         "started_display": fmt_ts_ms(run.started_ms) if run.started_ms else "",
@@ -657,6 +659,16 @@ def create_app(engine, repo, secret_key: str = ""):
     login_required = auth.login_required
     _current_operator = auth.current_operator
 
+    def _current_user_id():
+        user = auth.current_user() or {}
+        user_id = user.get("id")
+        return user_id if isinstance(user_id, int) and user_id > 0 else None
+
+    def _stamp_actor(body: dict, field: str = "actor") -> dict:
+        body[field] = _current_operator()
+        body[f"{field}_user_id"] = _current_user_id()
+        return body
+
     def _device_capture(experiment_id: int):
         captured_at_ms = int(time.time() * 1000)
         latest = engine.latest()
@@ -768,6 +780,9 @@ def create_app(engine, repo, secret_key: str = ""):
                             f"{selected_device_id}-{role}-{metric_key}"
                         ),
                         "actor": experiment["operator"],
+                        "actor_user_id": experiment.get(
+                            "operator_user_id"
+                        ),
                         "device_id": selected_device_id,
                         "device_role": role,
                         "metric_key": metric_key,
@@ -896,7 +911,21 @@ def create_app(engine, repo, secret_key: str = ""):
         try:
             body = dict(request.get_json(silent=True) or {})
             body["operator"] = _current_operator()
+            body["operator_user_id"] = _current_user_id()
             body.setdefault("reviewer", "")
+            if body["reviewer"] and _current_user_id() is not None:
+                matches = repo.accounts.find_active_users_by_display_name(
+                    body["reviewer"]
+                )
+                if (
+                    len(matches) != 1
+                    or matches[0]["role"]
+                    not in ("super_admin", "supervisor")
+                ):
+                    raise R201Error(
+                        "复核员必须对应唯一且有效的主管账号"
+                    )
+                body["reviewer_user_id"] = matches[0]["id"]
             created = r201.create_experiment(body)
             return jsonify(created), 201
         except (R201Error, sqlite3.IntegrityError) as exc:
@@ -919,7 +948,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/trace-items")
     def api_create_trace_items(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             return jsonify(
                 r201.create_trace_items(experiment_id, body)
@@ -930,7 +959,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/trace-items/<int:trace_item_id>/store")
     def api_store_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             return jsonify(
                 r201.transition_trace_item(
@@ -943,7 +972,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/trace-items/<int:trace_item_id>/retrieve")
     def api_retrieve_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             return jsonify(
                 r201.transition_trace_item(
@@ -956,7 +985,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/trace-labels")
     def api_request_trace_labels(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             jobs = r201.request_trace_labels(experiment_id, body)
             item_ids = ",".join(
@@ -1020,7 +1049,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/storage-locations")
     def api_create_storage_location():
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             return jsonify(r201.create_storage_location(body)), 201
         except R201Error as exc:
@@ -1029,7 +1058,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/storage-locations/<int:location_id>/print")
     def api_request_location_label(location_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             job = r201.request_location_label(location_id, body)
             return jsonify(
@@ -1091,7 +1120,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/start")
     def api_start_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1111,7 +1140,7 @@ def create_app(engine, repo, secret_key: str = ""):
     )
     def api_preview_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1129,7 +1158,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/complete")
     def api_complete_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1147,7 +1176,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/measurements/viscosity")
     def api_record_viscosity(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1161,7 +1190,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/data-sources")
     def api_add_experiment_data_source(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             created = r201.add_data_source(
                 experiment_id, body
@@ -1182,7 +1211,7 @@ def create_app(engine, repo, secret_key: str = ""):
             return _r201_error(R201Error("device not found", 404))
         body["device_id"] = device_id
         body["device_type"] = config.type
-        body["actor"] = _current_operator()
+        _stamp_actor(body)
         try:
             selection = r201.select_process_device(
                 experiment_id,
@@ -1200,7 +1229,7 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/deviations")
     def api_open_experiment_deviation(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        body["opened_by"] = _current_operator()
+        _stamp_actor(body, "opened_by")
         try:
             created = r201.open_deviation(
                 experiment_id, body
@@ -1215,7 +1244,7 @@ def create_app(engine, repo, secret_key: str = ""):
     )
     def api_resolve_experiment_deviation(experiment_id, deviation_id):
         body = dict(request.get_json(silent=True) or {})
-        body["reviewed_by"] = _current_operator()
+        _stamp_actor(body, "reviewed_by")
         try:
             resolved = r201.resolve_deviation(
                 experiment_id,
@@ -1236,6 +1265,7 @@ def create_app(engine, repo, secret_key: str = ""):
                     body.get("row_version"),
                     _current_operator(),
                     str(body.get("client_event_id", "")),
+                    _current_user_id(),
                 )
             )
         except R201Error as exc:
@@ -1254,6 +1284,7 @@ def create_app(engine, repo, secret_key: str = ""):
                     _current_operator(),
                     str(body.get("client_event_id", "")),
                     body.get("disposition"),
+                    _current_user_id(),
                 )
             )
         except R201Error as exc:
@@ -1527,8 +1558,14 @@ def create_app(engine, repo, secret_key: str = ""):
         if repo.get_run(run_id) is None:
             return jsonify({"error": "run not found"}), 404
         body = request.get_json(silent=True) or {}
-        repo.tag_run(run_id, body.get("operator", ""), body.get("project_tag", ""),
-                     body.get("experiment_tag", ""), body.get("remark", ""))
+        repo.tag_run(
+            run_id,
+            _current_operator(),
+            body.get("project_tag", ""),
+            body.get("experiment_tag", ""),
+            body.get("remark", ""),
+            operator_user_id=_current_user_id(),
+        )
         return jsonify({"ok": True})
 
     @app.get("/device/<int:device_id>")

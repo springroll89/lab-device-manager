@@ -91,8 +91,8 @@ class ExperimentStore:
                      sop_code, sop_version, target_viscosity_min_mpas,
                      target_viscosity_max_mpas, spec_snapshot_json, operator,
                      reviewer, downstream_route_variant, created_at_ms, updated_at_ms,
-                     snapshot_sha256)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     snapshot_sha256, operator_user_id, reviewer_user_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data["batch_id"],
                     data["membrane_system"],
@@ -109,6 +109,8 @@ class ExperimentStore:
                     now_ms,
                     now_ms,
                     data.get("snapshot_sha256"),
+                    data.get("operator_user_id"),
+                    data.get("reviewer_user_id"),
                 ),
             )
             for parameter in data.get("recipe_parameters") or []:
@@ -245,8 +247,9 @@ class ExperimentStore:
                      client_event_id, experiment_id, step_instance_id, event_type,
                      occurred_at_client_ms, received_at_server_ms,
                      client_clock_offset_ms, clock_sync_status, effective_at_ms,
-                     actor, source_type, payload_json, supersedes_event_id)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     actor, source_type, payload_json, supersedes_event_id,
+                     actor_user_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data["client_event_id"],
                     experiment_id,
@@ -261,6 +264,7 @@ class ExperimentStore:
                     data.get("source_type", "manual"),
                     _json(data.get("payload")),
                     data.get("supersedes_event_id"),
+                    data.get("actor_user_id"),
                 ),
             )
             if connection is None:
@@ -304,8 +308,9 @@ class ExperimentStore:
             cursor = conn.execute(
                 """INSERT INTO step_instance(
                      experiment_id, step_code, attempt_no, status,
-                     started_effective_at_ms, started_by, spec_snapshot_json)
-                   VALUES(?,?,?,'active',?,?,?)""",
+                     started_effective_at_ms, started_by, spec_snapshot_json,
+                     started_by_user_id)
+                   VALUES(?,?,?,'active',?,?,?,?)""",
                 (
                     experiment_id,
                     step_code,
@@ -313,6 +318,7 @@ class ExperimentStore:
                     effective_at_ms,
                     actor,
                     current["spec_snapshot_json"],
+                    event.get("actor_user_id"),
                 ),
             )
             new_version = expected_version + 1
@@ -372,9 +378,16 @@ class ExperimentStore:
                 raise RuntimeError("step is not active")
             conn.execute(
                 """UPDATE step_instance SET status='completed',
-                     ended_effective_at_ms=?, ended_by=?, result_json=?
+                     ended_effective_at_ms=?, ended_by=?, result_json=?,
+                     ended_by_user_id=?
                    WHERE id=?""",
-                (effective_at_ms, actor, _json(result), step_row["id"]),
+                (
+                    effective_at_ms,
+                    actor,
+                    _json(result),
+                    event.get("actor_user_id"),
+                    step_row["id"],
+                ),
             )
             new_version = expected_version + 1
             conn.execute(
@@ -486,8 +499,8 @@ class ExperimentStore:
                      client_event_id, experiment_id, step_instance_id,
                      measurement_type, effective_at_ms, sample_id, source_type,
                      valid, invalid_reason, values_json, raw_payload_sha256,
-                     parser_version, operator)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     parser_version, operator, operator_user_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     data["client_event_id"],
                     experiment_id,
@@ -502,6 +515,7 @@ class ExperimentStore:
                     data.get("raw_payload_sha256"),
                     data.get("parser_version"),
                     data["operator"],
+                    data.get("operator_user_id"),
                 ),
             )
             row = conn.execute(
@@ -1148,11 +1162,18 @@ class ExperimentStore:
         return [dict(row) for row in rows]
 
     def list_bound_samples(
-        self, experiment_id: int, device_role: str, limit: int = 1000
+        self,
+        experiment_id: int,
+        device_role: str,
+        limit: Optional[int] = 1000,
     ) -> list[dict]:
+        limit_sql = "LIMIT ?" if limit is not None else ""
+        params = [experiment_id, device_role]
+        if limit is not None:
+            params.append(limit)
         with self._lock:
             rows = self._conn.execute(
-                """SELECT
+                f"""SELECT
                      b.id AS binding_id, b.device_id, b.run_id AS bound_run_id,
                      b.device_role, b.metric_key, b.channel_selector,
                      b.linked_at_ms, b.unlinked_at_ms,
@@ -1166,8 +1187,8 @@ class ExperimentStore:
                     AND (b.run_id IS NULL OR s.run_id=b.run_id)
                    WHERE b.experiment_id=? AND b.device_role=?
                    ORDER BY s.ts_ms DESC, s.id DESC
-                   LIMIT ?""",
-                (experiment_id, device_role, limit),
+                   {limit_sql}""",
+                params,
             ).fetchall()
         result = []
         for row in reversed(rows):
@@ -1188,8 +1209,9 @@ class ExperimentStore:
                  deviation_no, experiment_id, step_instance_id, opened_at_ms,
                  status, severity, actual_value, standard_value, description,
                  immediate_action, opened_by, cause, impact_assessment, capa,
-                 disposition, reviewed_by, reviewed_at_ms)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 disposition, reviewed_by, reviewed_at_ms,
+                 opened_by_user_id, reviewed_by_user_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["deviation_no"],
                 experiment_id,
@@ -1208,6 +1230,8 @@ class ExperimentStore:
                 data.get("disposition"),
                 data.get("reviewed_by"),
                 data.get("reviewed_at_ms"),
+                data.get("opened_by_user_id"),
+                data.get("reviewed_by_user_id"),
             ),
         )
         row = conn.execute(
@@ -1381,7 +1405,8 @@ class ExperimentStore:
             conn.execute(
                 """UPDATE deviation SET status='closed', cause=?,
                      impact_assessment=?, capa=?, disposition=?,
-                     reviewed_by=?, reviewed_at_ms=?
+                     reviewed_by=?, reviewed_at_ms=?,
+                     reviewed_by_user_id=?
                    WHERE id=? AND experiment_id=?""",
                 (
                     data.get("cause"),
@@ -1390,6 +1415,7 @@ class ExperimentStore:
                     data["disposition"],
                     data["reviewed_by"],
                     event["effective_at_ms"],
+                    data.get("reviewed_by_user_id"),
                     deviation_id,
                     experiment_id,
                 ),

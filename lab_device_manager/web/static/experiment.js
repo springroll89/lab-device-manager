@@ -185,10 +185,10 @@ let toastTimer = null;
 let flushingOutbox = false;
 let liveConnecting = false;
 let viewedStepCode = null;
+let currentUserId = null;
 const openDevicePickers = new Set();
 const pendingDeviceSelections = new Map();
 const stepFormUiState = new Map();
-const OUTBOX_KEY = "r201-event-outbox-v1";
 const STEP_DRAFT_PREFIX = "r201-step-draft-v1";
 
 function uid(prefix = "evt") {
@@ -213,8 +213,10 @@ async function api(url, options = {}) {
 }
 
 function readOutbox() {
+  const key = R201Outbox.storageKey(currentUserId);
+  if (!key) return [];
   try {
-    const value = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]");
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
     return Array.isArray(value) ? value : [];
   } catch (_) {
     return [];
@@ -222,21 +224,53 @@ function readOutbox() {
 }
 
 function writeOutbox(entries) {
-  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(entries)); } catch (_) {}
+  const key = R201Outbox.storageKey(currentUserId);
+  if (!key) return;
+  try { localStorage.setItem(key, JSON.stringify(entries)); } catch (_) {}
   updateOutboxStatus(entries.length);
 }
 
 function updateOutboxStatus(count = readOutbox().length) {
   const box = byId("outboxStatus");
   if (!box) return;
-  box.textContent = count ? `待同步事件 ${count} 条` : "事件已同步";
+  const conflicts = readOutbox().filter(entry => entry.status === "conflict").length;
+  box.textContent = conflicts
+    ? `待处理冲突 ${conflicts} 条，待同步共 ${count} 条`
+    : (count ? `待同步事件 ${count} 条` : "事件已同步");
   box.style.color = count ? "var(--warn)" : "";
+  box.style.cursor = conflicts ? "pointer" : "";
+  box.title = conflicts ? "点击处理版本冲突" : "";
 }
 
 function removeOutboxEntry(clientEventId) {
   writeOutbox(
     readOutbox().filter(entry => entry.client_event_id !== clientEventId)
   );
+}
+
+function markOutboxConflict(clientEventId, error) {
+  writeOutbox(readOutbox().map(entry => (
+    entry.client_event_id === clientEventId
+      ? {
+          ...entry,
+          status:"conflict",
+          http_status:error.httpStatus,
+          last_error:error.message
+        }
+      : entry
+  )));
+}
+
+function resolveOutboxConflicts() {
+  const conflicts = readOutbox().filter(entry => entry.status === "conflict");
+  if (!conflicts.length) return;
+  const shouldDiscard = confirm(
+    `有 ${conflicts.length} 条操作因数据版本变化无法自动重放。`
+    + "确认后将放弃这些旧操作并刷新当前批次；取消则继续保留。"
+  );
+  if (!shouldDiscard) return;
+  writeOutbox(readOutbox().filter(entry => entry.status !== "conflict"));
+  if (experimentId) loadDetail();
 }
 
 async function mutate(url, payload) {
@@ -262,7 +296,12 @@ async function mutate(url, payload) {
     return result;
   } catch (error) {
     if (error.httpStatus) {
-      removeOutboxEntry(payload.client_event_id);
+      const action = R201Outbox.classifyHttpStatus(error.httpStatus);
+      if (action === "discard") {
+        removeOutboxEntry(payload.client_event_id);
+      } else if (action === "conflict") {
+        markOutboxConflict(payload.client_event_id, error);
+      }
       throw error;
     }
     updateOutboxStatus();
@@ -276,6 +315,7 @@ async function flushOutbox() {
   let synced = 0;
   try {
     for (const entry of readOutbox()) {
+      if (entry.status === "conflict") continue;
       try {
         await api(entry.url, {
           method:"POST",
@@ -284,9 +324,15 @@ async function flushOutbox() {
         removeOutboxEntry(entry.client_event_id);
         synced += 1;
       } catch (error) {
-        if (!error.httpStatus) break;
+        const action = R201Outbox.classifyHttpStatus(error.httpStatus);
+        if (action === "retry") break;
+        if (action === "conflict") {
+          markOutboxConflict(entry.client_event_id, error);
+          toast(`待同步操作发生版本冲突，已保留待处理：${error.message}`, true);
+          continue;
+        }
         removeOutboxEntry(entry.client_event_id);
-        toast(`待同步操作未被接受：${error.message}`, true);
+        toast(`待同步操作被拒绝：${error.message}`, true);
       }
     }
   } finally {
@@ -643,6 +689,7 @@ async function loadSession() {
   try {
     const data = await api("/api/session");
     currentOperator = data.operator || "本机操作员";
+    currentUserId = data.user_id;
     if (byId("operatorDisplay")) {
       byId("operatorDisplay").textContent = currentOperator;
     }
@@ -2076,7 +2123,7 @@ function deviceMetrics(device) {
   const metrics = latest?.metrics || {};
   if (device.type === "tyd02") {
     return [
-      ["加酸速率", metrics.inject_rate, "mL/min"],
+      ["加酸速率", metrics.inject_rate, metrics.inject_rate_unit || "—"],
       ["累计加入量", latest?.acc_volume, latest?.acc_unit || "mL"],
       ["目标加入量", metrics.target_volume, metrics.target_unit || "mL"],
       ["运行进度", latest?.progress_pct, "%"]
@@ -2095,7 +2142,11 @@ function deviceMetrics(device) {
       ["粘度", metrics.viscosity_mPas, "mPa·s"],
       ["样品温度", latest?.temp_c, "℃"],
       ["扭矩", metrics.torque_pct, "%"],
-      ["剪切速率", metrics.shear_rate_1s, "1/s"]
+      [
+        "数据用途",
+        metrics.data_verified === true ? "可自动判定" : "仅供参考",
+        ""
+      ]
     ];
   }
   if (device.type === "whd46") {
@@ -2308,12 +2359,15 @@ function automaticEventSummary(item) {
     const metrics = snapshot.metrics || {};
     if (type === "tyd02") {
       if (snapshot.acc_volume != null) summaries.push(`累计量 ${snapshot.acc_volume} ${snapshot.acc_unit || "mL"}`);
-      if (metrics.inject_rate != null) summaries.push(`速度 ${metrics.inject_rate} mL/min`);
+      if (metrics.inject_rate != null) summaries.push(`速度 ${metrics.inject_rate} ${metrics.inject_rate_unit || "单位未知"}`);
     } else if (type === "stirrer") {
       if (metrics.speed != null) summaries.push(`转速 ${metrics.speed} rpm`);
       if (snapshot.temp_c != null) summaries.push(`温度 ${snapshot.temp_c} ℃`);
     } else if (type === "viscometer" && metrics.viscosity_mPas != null) {
-      summaries.push(`粘度 ${metrics.viscosity_mPas} mPa·s`);
+      summaries.push(
+        `粘度 ${metrics.viscosity_mPas} mPa·s`
+        + (metrics.data_verified === true ? "" : "（仅供参考）")
+      );
     }
     if (summaries.length) summaries.push(`来源 ${device.alias || device.name}`);
   }
@@ -2468,6 +2522,9 @@ async function init() {
   const sessionState = await loadSession();
   if (sessionState === false) return;
   updateOutboxStatus();
+  if (byId("outboxStatus")) {
+    byId("outboxStatus").addEventListener("click", resolveOutboxConflicts);
+  }
   window.addEventListener("online", flushOutbox);
   await flushOutbox();
   if (experimentId) {

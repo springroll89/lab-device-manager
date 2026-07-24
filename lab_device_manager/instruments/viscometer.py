@@ -125,5 +125,8 @@ class ViscometerAdapter:
                 "torque_pct": d["torque_pct"],
                 "checksum_rx": frame[26],
                 "checksum_guess_sum256": guess_checksum_sum256(frame),
+                "data_verified": False,
+                "checksum_validated": False,
+                "parser_version": "provisional-v1",
             },
         )

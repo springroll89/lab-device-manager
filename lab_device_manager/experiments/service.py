@@ -222,6 +222,7 @@ class R201Service:
                     data.get("client_event_id") or f"create-{uuid.uuid4()}"
                 ),
                 "actor": data["operator"],
+                "actor_user_id": data.get("operator_user_id"),
             },
             "experiment_created",
             {
@@ -257,11 +258,12 @@ class R201Service:
         if experiment is None:
             raise R201Error("experiment not found", 404)
         measurements = self.store.list_measurements(experiment_id)
+        steps = self.store.list_steps(experiment_id)
         events = self.store.list_experiment_events(experiment_id)
         telemetry = self._telemetry_summary(experiment_id, events)
         return {
             "experiment": experiment,
-            "steps": self.store.list_steps(experiment_id),
+            "steps": steps,
             "active_step": self.store.get_active_step(experiment_id),
             "events": events,
             "measurements": measurements,
@@ -269,7 +271,9 @@ class R201Service:
             "recipe_parameters": self.store.list_recipe_parameters(experiment_id),
             "data_sources": self.store.list_data_source_bindings(experiment_id),
             "deviations": self.store.list_deviations(experiment_id),
-            "endpoint_ready": self._endpoint_ready(experiment, measurements),
+            "endpoint_ready": self._endpoint_ready(
+                experiment, measurements, steps
+            ),
             **telemetry,
             "step_labels": STEP_LABELS,
         }
@@ -319,7 +323,9 @@ class R201Service:
         self, experiment_id: int, data: dict
     ) -> list[dict]:
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         self._require_fields(data, ("item_type", "client_event_id"))
         item_type = str(data["item_type"]).strip()
         if item_type not in ("intermediate", "final_product"):
@@ -386,7 +392,9 @@ class R201Service:
         if item is None:
             raise R201Error("trace item not found", 404)
         experiment = self._get(item["experiment_id"])
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         if action not in ("store", "retrieve"):
             raise R201Error("unsupported trace item action")
         event = self._event(
@@ -428,7 +436,9 @@ class R201Service:
         self, experiment_id: int, data: dict
     ) -> list[dict]:
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         self._require_fields(data, ("item_ids", "client_event_id"))
         item_ids = data["item_ids"]
         if not isinstance(item_ids, list) or not item_ids:
@@ -679,7 +689,11 @@ class R201Service:
         if duplicate is not None:
             return duplicate
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, request_data.get("actor"))
+        self._require_operator(
+            experiment,
+            request_data.get("actor"),
+            request_data.get("actor_user_id"),
+        )
         self._check_version(experiment, expected_version)
         if step_code not in MAIN_STEPS:
             raise R201Error("step cannot be started directly")
@@ -718,7 +732,11 @@ class R201Service:
         request_data: dict,
     ) -> dict:
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, request_data.get("actor"))
+        self._require_operator(
+            experiment,
+            request_data.get("actor"),
+            request_data.get("actor_user_id"),
+        )
         self._check_version(experiment, expected_version)
         if experiment["current_step_code"] != step_code:
             raise R201Error(
@@ -776,7 +794,11 @@ class R201Service:
         if duplicate is not None:
             return duplicate
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, request_data.get("actor"))
+        self._require_operator(
+            experiment,
+            request_data.get("actor"),
+            request_data.get("actor_user_id"),
+        )
         self._check_version(experiment, expected_version)
         if experiment["current_step_code"] != step_code:
             raise R201Error(
@@ -964,7 +986,9 @@ class R201Service:
         data = dict(data or {})
         self._require_fields(data, ("client_event_id", "actor"))
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         duplicate = self._idempotent_event(
             experiment_id,
             data["client_event_id"],
@@ -1046,9 +1070,15 @@ class R201Service:
         capture_field("rotor", viscometer, "rotor")
         capture_field("rpm", viscometer, "rpm", "speed_rpm")
 
-        previous = self.store.list_measurements(
-            experiment_id, "viscosity"
-        )
+        active = self.store.get_active_step(experiment_id)
+        previous = [
+            item
+            for item in self.store.list_measurements(
+                experiment_id, "viscosity"
+            )
+            if active is not None
+            and item["step_instance_id"] == active["id"]
+        ]
         if previous:
             previous_values = previous[-1]["values"]
             for field in ("rotor", "rpm"):
@@ -1082,7 +1112,6 @@ class R201Service:
             and viscometer.get("sample_id") is not None
         ):
             data["sample_id"] = viscometer["sample_id"]
-        active = self.store.get_active_step(experiment_id)
         if (
             experiment["current_step_code"] != "R201-50"
             or active is None
@@ -1128,6 +1157,7 @@ class R201Service:
                 "raw_payload_sha256": data.get("raw_payload_sha256"),
                 "parser_version": data.get("parser_version"),
                 "operator": data["actor"],
+                "operator_user_id": data.get("actor_user_id"),
             },
             active["id"],
             event=event,
@@ -1153,7 +1183,9 @@ class R201Service:
                 "link_method",
             ),
         )
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         duplicate = self._idempotent_event(
             experiment_id, data["client_event_id"], "data_source_bound"
         )
@@ -1208,7 +1240,9 @@ class R201Service:
                 "device_type",
             ),
         )
-        self._require_operator(experiment, data.get("actor"))
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
         if experiment["status"] in (
             "pending_review",
             "released",
@@ -1283,7 +1317,11 @@ class R201Service:
         self._require_fields(
             data, ("client_event_id", "description", "opened_by")
         )
-        self._require_operator(experiment, data.get("opened_by"))
+        self._require_operator(
+            experiment,
+            data.get("opened_by"),
+            data.get("opened_by_user_id"),
+        )
         existing_event = self._idempotent_event(
             experiment_id,
             data["client_event_id"],
@@ -1306,6 +1344,7 @@ class R201Service:
             {
                 **data,
                 "actor": data["opened_by"],
+                "actor_user_id": data.get("opened_by_user_id"),
             },
             "deviation_opened",
             {
@@ -1362,16 +1401,27 @@ class R201Service:
         if deviation["status"] == "closed":
             raise R201Error("deviation is already closed", 409)
         reviewed_by = str(data["reviewed_by"]).strip()
+        reviewed_by_user_id = data.get("reviewed_by_user_id")
         assigned_reviewer = str(
             experiment.get("reviewer") or ""
         ).strip()
         if assigned_reviewer:
-            if reviewed_by == experiment["operator"].strip():
+            if (
+                experiment.get("operator_user_id") is not None
+                and reviewed_by_user_id == experiment["operator_user_id"]
+            ):
                 raise R201Error("偏差处置人不能与操作员相同")
-            if reviewed_by != assigned_reviewer:
+            if experiment.get("reviewer_user_id") is not None:
+                if reviewed_by_user_id != experiment["reviewer_user_id"]:
+                    raise R201Error("偏差处置人不是本批指定复核员")
+            elif reviewed_by != assigned_reviewer:
                 raise R201Error("偏差处置人不是本批指定复核员")
-        elif reviewed_by != experiment["operator"].strip():
-            raise R201Error("未设置复核员时，由当前登录操作员确认偏差")
+        else:
+            self._require_operator(
+                experiment,
+                reviewed_by,
+                reviewed_by_user_id,
+            )
         if data["disposition"] not in ("continue", "rework", "terminate"):
             raise R201Error(
                 "disposition must be continue, rework, or terminate"
@@ -1415,6 +1465,7 @@ class R201Service:
             {
                 **data,
                 "actor": data["reviewed_by"],
+                "actor_user_id": data.get("reviewed_by_user_id"),
             },
             "deviation_resolved",
             {
@@ -1444,6 +1495,7 @@ class R201Service:
         expected_version: int,
         actor: str,
         client_event_id: str,
+        actor_user_id: Optional[int] = None,
     ) -> dict:
         duplicate = self._idempotent_event(
             experiment_id, client_event_id, "experiment_submitted"
@@ -1451,7 +1503,7 @@ class R201Service:
         if duplicate is not None:
             return self._get(experiment_id)
         experiment = self._get(experiment_id)
-        self._require_operator(experiment, actor)
+        self._require_operator(experiment, actor, actor_user_id)
         self._check_version(experiment, expected_version)
         if experiment["current_step_code"] != "R201-80":
             raise R201Error("experiment is not ready to submit", 409)
@@ -1466,7 +1518,11 @@ class R201Service:
                 409,
             )
         event = self._event(
-            {"client_event_id": client_event_id, "actor": actor},
+            {
+                "client_event_id": client_event_id,
+                "actor": actor,
+                "actor_user_id": actor_user_id,
+            },
             "experiment_submitted",
             {},
         )
@@ -1496,6 +1552,7 @@ class R201Service:
         reviewer: str,
         client_event_id: str,
         disposition: Optional[str] = None,
+        reviewer_user_id: Optional[int] = None,
     ) -> dict:
         event_types = {
             "release": "experiment_released",
@@ -1513,9 +1570,15 @@ class R201Service:
         self._check_version(experiment, expected_version)
         if experiment["status"] != "pending_review":
             raise R201Error("experiment is not pending review", 409)
-        if reviewer.strip() == experiment["operator"].strip():
+        if (
+            experiment.get("operator_user_id") is not None
+            and reviewer_user_id == experiment["operator_user_id"]
+        ):
             raise R201Error("reviewer must be different from operator")
-        if reviewer.strip() != experiment["reviewer"].strip():
+        if experiment.get("reviewer_user_id") is not None:
+            if reviewer_user_id != experiment["reviewer_user_id"]:
+                raise R201Error("reviewer does not match the assigned reviewer")
+        elif reviewer.strip() != experiment["reviewer"].strip():
             raise R201Error("reviewer does not match the assigned reviewer")
         if action == "release":
             if not disposition:
@@ -1546,7 +1609,11 @@ class R201Service:
                 "completed_effective_at_ms": self.clock_ms(),
             }
         event = self._event(
-            {"client_event_id": client_event_id, "actor": reviewer},
+            {
+                "client_event_id": client_event_id,
+                "actor": reviewer,
+                "actor_user_id": reviewer_user_id,
+            },
             f"experiment_{action}d" if action != "return" else "experiment_returned",
             {"disposition": updates.get("disposition")},
         )
@@ -1573,7 +1640,14 @@ class R201Service:
             raise R201Error("row version conflict", 409)
 
     @staticmethod
-    def _require_operator(experiment: dict, actor):
+    def _require_operator(
+        experiment: dict, actor, actor_user_id: Optional[int] = None
+    ):
+        assigned_user_id = experiment.get("operator_user_id")
+        if assigned_user_id is not None:
+            if actor_user_id != assigned_user_id:
+                raise R201Error("当前账号不是本批指定操作员", 403)
+            return
         if str(actor or "").strip() != experiment["operator"].strip():
             raise R201Error("actor does not match the assigned operator")
 
@@ -1599,6 +1673,17 @@ class R201Service:
             and item.get("snapshot")
             and item["snapshot"].get("state") != "offline"
             and int(item.get("age_ms") or 0) <= 15_000
+            and (
+                device_type != "tyd02"
+                or role != "acid_pump"
+                or item["snapshot"].get("work_mode") == "仅注入"
+            )
+            and (
+                device_type != "viscometer"
+                or (
+                    item["snapshot"].get("metrics") or {}
+                ).get("data_verified") is True
+            )
         ]
         if selected_device_id is not None:
             return candidates[0] if candidates else None
@@ -1618,6 +1703,38 @@ class R201Service:
             if value not in (None, ""):
                 return value, key
         return None, None
+
+    @staticmethod
+    def _volume_ml(value, unit) -> Optional[float]:
+        factors = {
+            "nl": 0.000001,
+            "μl": 0.001,
+            "µl": 0.001,
+            "ul": 0.001,
+            "ml": 1.0,
+            "l": 1000.0,
+        }
+        factor = factors.get(str(unit or "").strip().lower())
+        if factor is None or value in (None, ""):
+            return None
+        try:
+            return float(value) * factor
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _rate_ml_min(cls, value, unit) -> Optional[float]:
+        normalized = str(unit or "").strip().lower().replace("／", "/")
+        suffixes = ("/min", "/分钟")
+        volume_unit = next(
+            (
+                normalized[: -len(suffix)]
+                for suffix in suffixes
+                if normalized.endswith(suffix)
+            ),
+            None,
+        )
+        return cls._volume_ml(value, volume_unit)
 
     def _derive_step_result(
         self,
@@ -1708,6 +1825,17 @@ class R201Service:
         pump_target, pump_target_key = self._capture_value(
             pump, "target_volume"
         )
+        pump_target_unit, _ = self._capture_value(pump, "target_unit")
+        pump_rate_unit, _ = self._capture_value(
+            pump, "inject_rate_unit", "flow_rate_unit"
+        )
+        pump_volume_ml = self._volume_ml(pump_volume, pump_unit)
+        pump_target_ml = self._volume_ml(
+            pump_target, pump_target_unit
+        )
+        pump_rate_ml_min = self._rate_ml_min(
+            pump_rate, pump_rate_unit
+        )
         syringe_spec, syringe_key = self._capture_value(
             pump, "syringe_spec", "syringe_code"
         )
@@ -1751,13 +1879,13 @@ class R201Service:
             )
             add_device(
                 "target_volume_ml",
-                pump_target,
+                pump_target_ml,
                 pump,
                 pump_target_key or "target_volume",
             )
             add_device(
                 "target_rate_ml_min",
-                pump_rate,
+                pump_rate_ml_min,
                 pump,
                 pump_rate_key or "inject_rate",
             )
@@ -1794,30 +1922,36 @@ class R201Service:
             start_volume, start_volume_key = self._capture_value(
                 start_pump, "acc_volume", "delivered_volume"
             )
+            start_unit, _ = self._capture_value(start_pump, "acc_unit")
+            start_volume_ml = self._volume_ml(start_volume, start_unit)
             add_device(
                 "acc_volume_start",
-                start_volume,
+                start_volume_ml,
                 start_pump,
                 start_volume_key or "acc_volume",
             )
             add_device(
                 "acc_volume_end",
-                pump_volume,
+                pump_volume_ml,
                 pump,
                 pump_volume_key or "acc_volume",
             )
             add_device(
                 "target_volume_ml",
-                pump_target,
+                pump_target_ml,
                 pump,
                 pump_target_key or "target_volume",
             )
-            if "acc_volume_unit" not in result:
-                result["acc_volume_unit"] = str(pump_unit or "mL")
+            if (
+                "acc_volume_unit" not in result
+                and start_volume_ml is not None
+                and pump_volume_ml is not None
+            ):
+                result["acc_volume_unit"] = "mL"
                 provenance["acc_volume_unit"] = {
                     "source_type": "device_confirmed",
                     "device_id": pump.get("device_id") if pump else None,
-                    "metric_key": "acc_unit",
+                    "metric_key": "acc_unit converted to mL",
                 }
         elif step_code == "R201-32":
             add_derived(
@@ -1938,6 +2072,7 @@ class R201Service:
             "clock_sync_status": clock_status,
             "effective_at_ms": effective,
             "actor": str(data["actor"]),
+            "actor_user_id": data.get("actor_user_id"),
             "source_type": data.get("source_type", "manual"),
             "payload": payload,
         }
@@ -1988,11 +2123,30 @@ class R201Service:
             )
         return existing
 
-    def _endpoint_ready(self, experiment: dict, measurements: list[dict]) -> bool:
+    def _endpoint_ready(
+        self,
+        experiment: dict,
+        measurements: list[dict],
+        steps: Optional[list[dict]] = None,
+    ) -> bool:
+        steps = steps if steps is not None else self.store.list_steps(
+            experiment["id"]
+        )
+        aging_attempts = [
+            step
+            for step in steps
+            if step["step_code"] == "R201-50"
+            and step["status"] in ("active", "completed")
+        ]
+        if not aging_attempts:
+            return False
+        current_attempt_id = aging_attempts[-1]["id"]
         valid = [
             item
             for item in measurements
-            if item["measurement_type"] == "viscosity" and item["valid"]
+            if item["measurement_type"] == "viscosity"
+            and item["valid"]
+            and item["step_instance_id"] == current_attempt_id
         ]
         if len(valid) < 2:
             return False
@@ -2227,7 +2381,7 @@ class R201Service:
     ) -> dict:
         experiment = self.store.get_experiment(experiment_id)
         rows = self.store.list_bound_samples(
-            experiment_id, "reaction_temp", limit=1000
+            experiment_id, "reaction_temp", limit=None
         )
         series = []
         for row in rows:

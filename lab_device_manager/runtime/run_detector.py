@@ -23,6 +23,9 @@ class RunDetector:
         self._had_alarm = False
         self._alarm_count = 0
         self._lifetime_start: float = 0.0
+        self._last_acc: Optional[float] = None
+        self._last_acc_unit: Optional[str] = None
+        self._had_comms_loss = False
 
     def on_sample(self, snap: StatusSnapshot):
         now_ms = int(self.clock() * 1000)
@@ -32,12 +35,16 @@ class RunDetector:
         if new == "offline":
             if old != "offline":
                 self._emit(now_ms, "comms_lost", "critical")
+                if self._run_id is not None:
+                    self._had_comms_loss = True
             self._state = "offline"
             return
         if old == "offline":
             self._emit(now_ms, "comms_recover", "info")
 
         if self._run_id is not None:
+            self._last_acc = snap.acc_volume
+            self._last_acc_unit = snap.acc_unit
             self.repo.add_sample(self._run_id, self.device_id, now_ms, snap.state,
                                  snap.flow_rpm, snap.acc_volume, snap.temp_c,
                                  json.dumps(snap.metrics, ensure_ascii=False))
@@ -57,13 +64,24 @@ class RunDetector:
                 dict(snap.metrics, work_mode=snap.work_mode))
             self._had_alarm = False
             self._alarm_count = 0
+            self._last_acc = snap.acc_volume
+            self._last_acc_unit = snap.acc_unit
+            self._had_comms_loss = False
             self._emit(now_ms, "start", "info")
         elif new == "paused" and old == "running" and self._run_id is not None:
             self._emit(now_ms, "pause", "warning")
         elif new == "running" and old == "paused":
             self._emit(now_ms, "resume", "info")
         elif new == "stopped" and self._run_id is not None:
-            end_status = "alarm_abort" if self._had_alarm else "completed"
+            end_status = (
+                "alarm_abort"
+                if self._had_alarm
+                else (
+                    "comms_interrupted"
+                    if self._had_comms_loss
+                    else "completed"
+                )
+            )
             closed = self._run_id
             ending_acc = (
                 snap.acc_volume if snap.acc_volume is not None else 0.0
@@ -76,6 +94,32 @@ class RunDetector:
             self._emit(now_ms, "stop", "info", run_id=closed)
 
         self._state = new
+
+    def finalize(self, end_status: str = "interrupted_shutdown"):
+        if self._run_id is None:
+            return
+        now_ms = int(self.clock() * 1000)
+        run_id = self._run_id
+        actual = (
+            self._last_acc - self._lifetime_start
+            if self._last_acc is not None
+            else None
+        )
+        if self._had_comms_loss:
+            end_status = "comms_interrupted"
+        self.repo.close_run(
+            run_id,
+            now_ms,
+            end_status,
+            actual,
+            self._last_acc_unit,
+            self._last_acc,
+            self._last_acc_unit,
+            self._alarm_count,
+        )
+        self._run_id = None
+        self._emit(now_ms, "interrupted", "warning", run_id=run_id)
+        self._state = "stopped"
 
     def _emit(self, ts_ms: int, event_type: str, severity: str, run_id=None):
         rid = self._run_id if run_id is None else run_id

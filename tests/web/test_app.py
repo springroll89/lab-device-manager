@@ -692,6 +692,65 @@ def test_operator_cannot_open_account_management(tmp_path):
     assert operator.get("/change-password").status_code == 200
 
 
+def test_same_display_name_cannot_take_over_batch_or_spoof_run_tag(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    csrf = admin.get("/api/session").get_json()["csrf_token"]
+    admin.post(
+        "/api/accounts",
+        json={
+            "username": "same-name-worker",
+            "display_name": "系统管理员",
+            "password": "Worker123",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    experiment = admin.post(
+        "/api/experiments",
+        json={
+            "batch_id": "20260724-CEM-01",
+            "membrane_system": "CEM",
+            "recipe_no": "R-CEM-001",
+            "recipe_version": "V1",
+            "sop_code": "SOP-SOL-GEL-CEM-AEM-01",
+            "sop_version": "V0.2",
+            "target_viscosity_min_mpas": 2.5,
+            "target_viscosity_max_mpas": 10,
+            "reviewer": "",
+            "spec_snapshot": {},
+        },
+    ).get_json()
+
+    worker = app.test_client()
+    _login(worker, "same-name-worker", "Worker123")
+    _change_password(worker, "Worker123", "Worker456")
+    denied = worker.post(
+        f"/api/experiments/{experiment['id']}/steps/R201-01/start",
+        json={
+            "row_version": experiment["row_version"],
+            "client_event_id": "same-name-takeover",
+        },
+    )
+
+    run_id = repo.open_run(did, 1, 1000, {})
+    repo.close_run(run_id, 2000, "completed", 1, "mL", 1, "mL", 0)
+    tagged = worker.post(
+        f"/api/runs/{run_id}/tag",
+        json={"operator": "伪造姓名", "project_tag": "验证"},
+    )
+    run = repo.get_run(run_id)
+
+    assert denied.status_code == 403
+    assert tagged.status_code == 200
+    assert run.operator == "系统管理员"
+    assert run.operator_user_id == worker.get(
+        "/api/session"
+    ).get_json()["user_id"]
+
+
 def test_admin_can_reset_and_disable_subordinate_account(tmp_path):
     app, repo, did = _authenticated_app(tmp_path)
     admin = app.test_client()

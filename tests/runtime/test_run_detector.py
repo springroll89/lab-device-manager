@@ -121,3 +121,13 @@ def test_zero_accumulator_at_close_is_not_treated_as_missing():
     d.on_sample(_snap_with_acc("running", acc=0.0))
     d.on_sample(_snap_with_acc("stopped", acc=0.0))
     assert repo.runs_closed[-1][2] == 0.0
+
+
+def test_finalize_closes_active_run_and_marks_comms_interruption():
+    d, repo = _detector()
+    d.on_sample(_snap_with_acc("running", acc=10.0))
+    d.on_sample(_snap("offline"))
+    d.finalize()
+
+    assert repo.runs_closed == [("comms_interrupted", 0, 0.0)]
+    assert ("interrupted", "warning") in repo.events

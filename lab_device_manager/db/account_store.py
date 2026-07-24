@@ -106,6 +106,18 @@ class AccountStore:
             ).fetchall()
             return [_decode_user(row) for row in rows]
 
+    def find_active_users_by_display_name(
+        self, display_name: str
+    ) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM user_account
+                   WHERE display_name=? AND is_active=1
+                   ORDER BY id""",
+                (str(display_name).strip(),),
+            ).fetchall()
+            return [_decode_user(row) for row in rows]
+
     def create_user(
         self,
         *,

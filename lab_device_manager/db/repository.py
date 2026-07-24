@@ -171,6 +171,19 @@ class Repository:
             )
             self._conn.commit()
 
+    def close_all_open_runs(
+        self, ended_ms: int, end_status: str = "interrupted_restart"
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE run
+                   SET ended_ms=?, duration_ms=?-started_ms, end_status=?
+                   WHERE ended_ms IS NULL""",
+                (ended_ms, ended_ms, end_status),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
     def add_sample(self, run_id: Optional[int], device_id: int, ts_ms: int,
                    state: str, flow_rate: Optional[float],
                    delivered_volume: Optional[float], temp_c: Optional[float],
@@ -267,12 +280,20 @@ class Repository:
         return [_row_to_run(r) for r in rows]
 
     def tag_run(self, run_id: int, operator: str, project_tag: str,
-                experiment_tag: str, remark: str):
+                experiment_tag: str, remark: str,
+                operator_user_id: Optional[int] = None):
         with self._lock:
             self._conn.execute(
                 """UPDATE run SET operator=?, project_tag=?, experiment_tag=?,
-                      remark=?, tagged=1 WHERE id=?""",
-                (operator, project_tag, experiment_tag, remark, run_id),
+                      remark=?, tagged=1, operator_user_id=? WHERE id=?""",
+                (
+                    operator,
+                    project_tag,
+                    experiment_tag,
+                    remark,
+                    operator_user_id,
+                    run_id,
+                ),
             )
             self._conn.commit()
 
@@ -311,6 +332,7 @@ def _row_to_run(r) -> Run:
         actual_volume=r["actual_volume"], actual_unit=r["actual_unit"],
         alarm_count=r["alarm_count"],
         setpoints_json=r["setpoints_json"],
+        operator_user_id=r["operator_user_id"],
     )
 
 
