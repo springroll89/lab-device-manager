@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from lab_device_manager.db.account_store import AccountStore
 from lab_device_manager.db.experiment_store import ExperimentStore
 from lab_device_manager.db.models import Device, Run, SampleRow, EventRow
 
@@ -40,6 +41,7 @@ class Repository:
         self._conn.executescript(_SCHEMA.read_text(encoding="utf-8"))
         self._apply_migrations()
         self._conn.commit()
+        self.accounts = AccountStore(self._conn, self._lock)
         self.experiments = ExperimentStore(self._conn, self._lock)
 
     def _pending_migration_paths(self) -> list[Path]:

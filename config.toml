@@ -3,8 +3,6 @@ sample_interval_ms = 1000
 web_port           = 7800
 auto_open_browser  = true
 # secret_key is auto-generated in data/.session_secret if omitted.
-# login_password 为空字符串时关闭登录；设置为非空字符串后启用密码保护。
-# login_password     = "your-strong-password"
 
 [[devices]]
 name        = "pump-1"

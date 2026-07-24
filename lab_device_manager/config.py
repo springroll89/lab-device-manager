@@ -29,7 +29,6 @@ class Config:
     auto_open_browser: bool = True
     devices: tuple = ()   # tuple[DeviceConfig]
     secret_key: str = ""
-    login_password: str = ""
 
 
 def load_config(path: str | None = None) -> Config:
@@ -55,5 +54,4 @@ def load_config(path: str | None = None) -> Config:
         auto_open_browser=d.get("auto_open_browser", True),
         devices=devs,
         secret_key=secret_key,
-        login_password=d.get("login_password", ""),
     )

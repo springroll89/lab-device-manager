@@ -14,7 +14,7 @@ def main():  # pragma: no cover - wiring + server lifecycle
     eng = Engine(repo, list(cfg.devices), cfg.sample_interval_ms / 1000.0,
                  adapter_factory=serial_adapter_factory)
     eng.start()
-    app = create_app(eng, repo, secret_key=cfg.secret_key, login_password=cfg.login_password)
+    app = create_app(eng, repo, secret_key=cfg.secret_key)
     try:
         if cfg.auto_open_browser:
             url = f"http://127.0.0.1:{cfg.web_port}/"

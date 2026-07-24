@@ -649,9 +649,11 @@ async function loadSession() {
     const sessionUser = byId("sessionUser");
     if (sessionUser) {
       sessionUser.textContent = data.authenticated
-        ? `操作员 · ${currentOperator}`
+        ? `${data.role_label || "操作员"} · ${currentOperator}`
         : "登录 / 设置操作员";
-      sessionUser.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+      sessionUser.href = data.can_manage_accounts
+        ? "/accounts"
+        : "/change-password";
     }
     const logoutForm = byId("logoutForm");
     if (logoutForm) {

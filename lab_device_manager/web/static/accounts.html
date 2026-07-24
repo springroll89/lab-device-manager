@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <link rel="icon" href="data:,">
+  <title>账号管理 · 实验室管理系统</title>
+  <link rel="stylesheet" href="/static/puricore-theme.css">
+</head>
+<body class="page-accounts">
+  <header class="account-topbar">
+    <a class="account-brand" href="/">
+      <img src="/static/logo.png" alt="Puricore">
+      <span>账号管理</span>
+    </a>
+    <nav class="account-nav">
+      <a href="/experiments">实验执行</a>
+      <a href="/">设备看板</a>
+      <a href="/change-password">修改密码</a>
+      <span id="accountIdentity">正在读取…</span>
+      <form method="post" action="/logout"><button type="submit">退出</button></form>
+    </nav>
+  </header>
+
+  <main class="accounts-shell">
+    <section class="accounts-heading">
+      <div>
+        <h1>账号与权限</h1>
+        <p id="permissionSummary">正在读取当前权限…</p>
+      </div>
+      <button id="refreshAccounts" class="account-secondary" type="button">刷新列表</button>
+    </section>
+
+    <div class="accounts-layout">
+      <section class="account-panel">
+        <div class="account-panel-heading">
+          <h2>创建子账号</h2>
+          <p>新账号首次登录后必须修改临时密码。</p>
+        </div>
+        <form id="createAccountForm" class="account-form" novalidate>
+          <label class="account-field">
+            <span>登录账号</span>
+            <input id="newUsername" autocomplete="off" placeholder="例如 zhangsan" required>
+            <small>3–32 位字母、数字、点、横线或下划线。</small>
+          </label>
+          <label class="account-field">
+            <span>姓名</span>
+            <input id="newDisplayName" autocomplete="off" placeholder="例如 张三" required>
+          </label>
+          <label class="account-field">
+            <span>账号级别</span>
+            <select id="newRole" required></select>
+          </label>
+          <label class="account-field">
+            <span>临时密码</span>
+            <input id="newAccountPassword" type="password" autocomplete="new-password" required>
+            <small>至少 8 位，同时包含字母和数字。</small>
+          </label>
+          <div id="createAccountStatus" class="form-status hidden" role="status" aria-live="polite"></div>
+          <button id="createAccountButton" class="account-primary" type="submit">创建账号</button>
+        </form>
+      </section>
+
+      <section class="account-panel account-list-panel">
+        <div class="account-panel-heading">
+          <h2>现有账号</h2>
+          <p>停用账号不会删除历史实验和审计记录。</p>
+        </div>
+        <div class="account-table-wrap">
+          <table class="account-table">
+            <thead>
+              <tr>
+                <th>账号 / 姓名</th>
+                <th>级别</th>
+                <th>状态</th>
+                <th>最近登录</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountRows"></tbody>
+          </table>
+        </div>
+        <div id="accountListStatus" class="account-empty hidden"></div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="resetDialog" class="account-dialog">
+    <form id="resetPasswordForm" method="dialog" novalidate>
+      <h2>重置临时密码</h2>
+      <p id="resetTarget">—</p>
+      <input id="resetUserId" type="hidden">
+      <label class="account-field">
+        <span>新的临时密码</span>
+        <input id="resetPassword" type="password" autocomplete="new-password" required>
+        <small>账号下次登录后仍需再次修改密码。</small>
+      </label>
+      <div id="resetStatus" class="form-status hidden" role="status" aria-live="polite"></div>
+      <div class="dialog-actions">
+        <button id="cancelReset" class="account-secondary" type="button">取消</button>
+        <button id="confirmReset" class="account-primary" type="submit">确认重置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/accounts.js"></script>
+</body>
+</html>

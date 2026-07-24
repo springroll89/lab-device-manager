@@ -53,6 +53,11 @@
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <a href="/experiments" style="color:#bcebdd;text-decoration:none;border:1px solid rgba(61,220,132,.35);padding:7px 12px;border-radius:9px;background:rgba(61,220,132,.08)">R-201 实验执行</a>
+    <a id="accountEntry" class="dashboard-account-link hidden" href="/change-password">修改密码</a>
+    <span id="dashboardIdentity" class="dashboard-identity">正在读取账号…</span>
+    <form class="dashboard-logout" method="post" action="/logout">
+      <button type="submit">退出</button>
+    </form>
     <div class="env-badge">本地实验室</div>
   </div>
 </header>
