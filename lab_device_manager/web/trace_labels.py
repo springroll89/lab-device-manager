@@ -23,10 +23,17 @@ TYPE_LABELS = {
 }
 
 
-def qr_svg(code: str) -> str:
+def trace_qr_payload(public_base_url: str, code: str) -> str:
+    base = str(public_base_url or "").rstrip("/")
+    if not base:
+        raise ValueError("public_base_url is required for trace QR labels")
+    return f"{base}/scan/{quote(str(code), safe='')}"
+
+
+def qr_svg(payload: str) -> str:
     drawing = createBarcodeDrawing(
         "QR",
-        value=f"PURICORE:{code}",
+        value=payload,
         width=120,
         height=120,
         barLevel="M",
@@ -166,5 +173,39 @@ def storage_location_label_html(
     </article>"""
     return _page_shell(
         f"{location['display_name']} · 位置标签",
+        label * copies,
+    )
+
+
+def material_container_label_html(
+    container: dict, copies: int = 1
+) -> str:
+    quantity = "未录入"
+    if container.get("quantity_remaining") is not None:
+        quantity = (
+            f"{container['quantity_remaining']} "
+            f"{container.get('unit') or ''}"
+        ).strip()
+    label = f"""
+    <article class="label">
+      <div>
+        <div class="brand">PURICORE</div>
+        <div class="kind">原材料标签</div>
+        <h1>{escape(container['material_name'])}</h1>
+        <div class="code">{escape(container['container_code'])}</div>
+        <div class="meta">
+          <div><b>供应商批号</b> {escape(container.get('supplier_lot') or '—')}</div>
+          <div><b>有效期</b> {escape(container.get('expires_on') or '—')}</div>
+          <div><b>登记余量</b> {escape(quantity)}</div>
+          <div><b>状态</b> {escape(STATUS_LABELS.get(container['status'], container['status']))}</div>
+        </div>
+      </div>
+      <div class="qr">
+        <img src="/api/trace/qr.svg?code={quote(container['container_code'])}" alt="原材料二维码">
+        <small>{escape(container['container_code'])}</small>
+      </div>
+    </article>"""
+    return _page_shell(
+        f"{container['container_code']} · 原材料标签",
         label * copies,
     )

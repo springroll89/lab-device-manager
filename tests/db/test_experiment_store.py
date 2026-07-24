@@ -34,6 +34,45 @@ def test_repository_enables_foreign_keys_and_applies_r201_migration():
     assert "002_r201_snapshot_hash" in versions
     assert "003_r201_binding_idempotency" in versions
     assert "004_traceability_mvp" in versions
+    assert "007_parallel_traceability" in versions
+
+
+def test_viscometer_lease_is_exclusive_and_reusable_after_release():
+    repo = Repository(":memory:")
+    first = repo.experiments.create_experiment(
+        _experiment_payload(), now_ms=1000
+    )
+    second = repo.experiments.create_experiment(
+        _experiment_payload("20260723-CEM-02"), now_ms=1100
+    )
+    device_id = repo.upsert_device(
+        "viscometer-1", "viscometer", "共享粘度计"
+    )
+
+    lease = repo.experiments.claim_measurement_device(
+        first["id"], device_id, "张三", None, 1200
+    )
+    assert lease["purpose"] == "measurement"
+    with pytest.raises(RuntimeError, match=first["batch_id"]):
+        repo.experiments.claim_measurement_device(
+            second["id"], device_id, "李四", None, 1300
+        )
+
+    assert repo.experiments.release_measurement_device(
+        first["id"], device_id, 1400
+    ) == 1
+    reused = repo.experiments.claim_measurement_device(
+        second["id"], device_id, "李四", None, 1500
+    )
+    assert reused["experiment_id"] == second["id"]
+
+    expiring = repo.experiments.claim_measurement_device(
+        second["id"], device_id, "李四", None, 2000, lease_ms=10
+    )
+    assert expiring["status"] == "active"
+    assert repo.experiments.list_device_reservations(
+        now_ms=2011
+    ) == []
 
 
 def test_existing_database_is_backed_up_once_before_pending_migrations(tmp_path):

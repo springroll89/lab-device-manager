@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import replace
 import sys
 import threading
+import time
 from typing import Callable, Optional
 from lab_device_manager.sampler import Sampler
 from lab_device_manager.instruments.factory import make_adapter
@@ -31,8 +32,14 @@ class Engine:
         self._device_map = {}
         self._adapters = {}
         self._detectors = {}
+        self._started = False
 
     def start(self):
+        if not self._started:
+            self.repo.close_all_open_runs(
+                int(time.time() * 1000), "interrupted_restart"
+            )
+            self._started = True
         for dc in self.devices:
             device_id = self.repo.upsert_device(
                 dc.name,
@@ -49,7 +56,8 @@ class Engine:
     def stop(self):
         with self._device_lock:
             for device_id in list(self._device_map):
-                self._stop_device(device_id)
+                self._stop_device(device_id, "interrupted_shutdown")
+            self._started = False
 
     def _start_device(self, device_id: int, config: DeviceConfig):
         adapter, cleanup = self.adapter_factory(config)
@@ -84,10 +92,15 @@ class Engine:
                 pass
             raise
 
-    def _stop_device(self, device_id: int):
+    def _stop_device(
+        self, device_id: int, end_status: str = "interrupted_reconnect"
+    ):
         sampler = self._samplers.pop(device_id, None)
         if sampler is not None:
             sampler.stop()
+        detector = self._detectors.get(device_id)
+        if detector is not None:
+            detector.finalize(end_status)
         cleanup = self._cleanups.pop(device_id, None)
         self._adapters.pop(device_id, None)
         if cleanup is not None:
@@ -115,7 +128,7 @@ class Engine:
             if config is None:
                 return {"ok": False, "error": "device not found"}
             updated = replace(config, serial_port=serial_port)
-            self._stop_device(device_id)
+            self._stop_device(device_id, "interrupted_reconnect")
             self._device_map[device_id] = updated
             try:
                 self._start_device(device_id, updated)
@@ -130,7 +143,7 @@ class Engine:
             config = self._device_map.get(device_id)
             if config is None:
                 return {"ok": False, "error": "device not found"}
-            self._stop_device(device_id)
+            self._stop_device(device_id, "manual_disconnect")
             self._set_offline(device_id, config, "manual disconnect")
             return {"ok": True}
 

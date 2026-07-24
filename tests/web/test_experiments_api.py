@@ -1,6 +1,9 @@
 import json
 import time
+from io import BytesIO
 
+from PIL import Image
+import zxingcpp
 from lab_device_manager.db.repository import Repository
 from lab_device_manager.instruments.base import StatusSnapshot
 from lab_device_manager.runtime.types import DeviceConfig
@@ -70,6 +73,34 @@ def _multi_stirrer_app():
     return app, repo, device_ids
 
 
+def _single_stirrer_app():
+    repo = Repository(":memory:")
+    device_id = repo.upsert_device(
+        "stirrer-only", "stirrer", "HMS-C 唯一搅拌器"
+    )
+    snapshot = StatusSnapshot(
+        timestamp=time.time(),
+        state="running",
+        work_mode="stirring",
+        device_id="stirrer-only",
+        temp_c=26,
+        metrics={"speed": 300},
+    )
+    engine = StaticEngine(
+        {device_id: snapshot},
+        {
+            device_id: DeviceConfig(
+                name="stirrer-only",
+                type="stirrer",
+                alias="HMS-C 唯一搅拌器",
+            )
+        },
+    )
+    app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
+    return app, repo, device_id
+
+
 CREATE = {
     "batch_id": "20260723-AEM-01",
     "membrane_system": "AEM",
@@ -91,6 +122,8 @@ def test_experiments_page_and_static_script_are_served():
     page = client.get("/experiments")
     assert page.status_code == 200
     assert b"experiment.js" in page.data
+    assert b"scanner.js" in page.data
+    assert b"cameraScanButton" in page.data
     script = client.get("/static/experiment.js")
     assert script.status_code == 200
     assert b"STEP_DRAFT_PREFIX" in script.data
@@ -268,6 +301,142 @@ def test_storage_location_label_and_qr_are_printable():
     assert b"<svg" in qr.data
 
 
+def test_material_container_can_be_registered_and_resolved_by_scan():
+    app, _, _ = _app()
+    client = app.test_client()
+    created = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-TEOS-0001",
+            "external_barcode": "6901234567890",
+            "material_name": "TEOS",
+            "supplier": "测试供应商",
+            "supplier_lot": "LOT-202607",
+            "expires_on": "2027-07-01",
+            "quantity_remaining": 500,
+            "unit": "mL",
+        },
+    )
+    resolved = client.get(
+        "/api/scan/resolve?code=6901234567890"
+    )
+
+    assert created.status_code == 201
+    assert resolved.status_code == 200
+    assert resolved.get_json()["kind"] == "material_container"
+    assert resolved.get_json()["material"]["material_name"] == "TEOS"
+
+
+def test_material_management_page_and_url_qr_are_available():
+    app, _, _ = _app()
+    client = app.test_client()
+    page = client.get("/materials")
+    assert page.status_code == 200
+    assert b"materials.js" in page.data
+
+    created = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-ETOH-0001",
+            "material_name": "乙醇",
+            "quantity_remaining": 1000,
+            "unit": "mL",
+        },
+    ).get_json()
+    qr = client.get(
+        f"/api/trace/qr.svg?code={created['container_code']}"
+    )
+    label = client.get(
+        f"/api/material-containers/{created['id']}/label"
+    )
+    detail = client.get(
+        f"/api/material-containers/{created['id']}"
+    )
+
+    assert qr.status_code == 200
+    assert qr.headers["X-QR-Payload"].endswith(
+        "/scan/RM-ETOH-0001"
+    )
+    assert label.status_code == 200
+    assert "原材料标签".encode() in label.data
+    assert detail.status_code == 200
+    assert detail.get_json()["events"][0]["event_type"] == "registered"
+    redirect_response = client.get(
+        f"/scan/{created['container_code']}",
+        follow_redirects=False,
+    )
+    assert redirect_response.headers["Location"] == (
+        f"/materials?scan={created['container_code']}"
+    )
+
+
+def test_camera_frame_can_be_decoded_on_server_for_ios_fallback():
+    app, _, _ = _app()
+    client = app.test_client()
+    barcode = zxingcpp.create_barcode(
+        "https://lab.puricore.example/scan/RM-TEOS-0001",
+        zxingcpp.BarcodeFormat.QRCode,
+    )
+    image = Image.fromarray(barcode.to_image(scale=5))
+    payload = BytesIO()
+    image.save(payload, format="PNG")
+    payload.seek(0)
+
+    response = client.post(
+        "/api/scan/decode",
+        data={"image": (payload, "camera-frame.png")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["code"].endswith("/scan/RM-TEOS-0001")
+    assert response.get_json()["format"] == "QR Code"
+
+
+def test_camera_decode_rejects_missing_invalid_and_barcode_free_images():
+    app, _, _ = _app()
+    client = app.test_client()
+    missing = client.post("/api/scan/decode")
+    invalid = client.post(
+        "/api/scan/decode",
+        data={"image": (BytesIO(b"not-an-image"), "bad.jpg")},
+        content_type="multipart/form-data",
+    )
+    blank_data = BytesIO()
+    Image.new("RGB", (200, 200), "white").save(
+        blank_data, format="PNG"
+    )
+    blank_data.seek(0)
+    blank = client.post(
+        "/api/scan/decode",
+        data={"image": (blank_data, "blank.png")},
+        content_type="multipart/form-data",
+    )
+
+    assert missing.status_code == 400
+    assert invalid.status_code == 400
+    assert blank.status_code == 422
+
+
+def test_scan_url_redirects_to_the_relevant_batch():
+    app, _, _ = _app()
+    client = app.test_client()
+    experiment = client.post(
+        "/api/experiments",
+        json={**CREATE, "batch_id": "20260724-AEM-88"},
+    ).get_json()
+
+    response = client.get(
+        "/scan/20260724-AEM-88",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == (
+        f"/experiments/{experiment['id']}?scan=20260724-AEM-88"
+    )
+
+
 def test_create_experiment_validates_input_and_duplicate_batch():
     app, _, _ = _app()
     client = app.test_client()
@@ -366,12 +535,104 @@ def test_data_source_binding_and_sse_snapshot():
     assert client.post(
         f"/api/experiments/{exp['id']}/evaluate-telemetry"
     ).status_code == 200
-    stream = client.get(f"/api/experiments/{exp['id']}/stream")
+    stream = client.get(
+        f"/api/experiments/{exp['id']}/stream?once=1"
+    )
     assert stream.status_code == 200
     assert stream.content_type.startswith("text/event-stream")
     body = stream.data.decode()
     assert "event: snapshot" in body
     assert '"acc_volume": 105' in body
+    assert "temperature_series" not in body
+    script = client.get("/static/experiment.js").data
+    assert b"setInterval(connectLive" not in script
+    assert b"setInterval(syncRevision" not in script
+    assert b"appendLiveTemperature" in script
+
+
+def test_experiment_revision_changes_after_another_client_writes():
+    app, _, _ = _app()
+    creator = app.test_client()
+    observer = app.test_client()
+    exp = creator.post("/api/experiments", json=CREATE).get_json()
+    before = observer.get(
+        f"/api/experiments/{exp['id']}/revision"
+    ).get_json()
+
+    response = creator.post(
+        f"/api/experiments/{exp['id']}/steps/R201-01/start",
+        json={
+            "row_version": exp["row_version"],
+            "client_event_id": "cross-client-start",
+        },
+    )
+    after = observer.get(
+        f"/api/experiments/{exp['id']}/revision"
+    ).get_json()
+
+    assert response.status_code == 200
+    assert after["revision"] != before["revision"]
+    assert after["row_version"] == 1
+
+
+def test_same_device_cannot_be_reserved_by_two_active_batches():
+    app, _, device_ids = _multi_stirrer_app()
+    client = app.test_client()
+    first = client.post(
+        "/api/experiments", json=CREATE
+    ).get_json()
+    second = client.post(
+        "/api/experiments",
+        json={**CREATE, "batch_id": "20260723-AEM-02"},
+    ).get_json()
+    device_id = device_ids[0]
+
+    claimed = client.post(
+        f"/api/experiments/{first['id']}/device-bindings",
+        json={"client_event_id": "reserve-first", "device_id": device_id},
+    )
+    conflict = client.post(
+        f"/api/experiments/{second['id']}/device-bindings",
+        json={"client_event_id": "reserve-second", "device_id": device_id},
+    )
+
+    assert claimed.status_code == 200
+    assert conflict.status_code == 409
+    assert first["batch_id"] in conflict.get_json()["error"]
+
+
+def test_automatic_binding_reserves_unique_stirrer_and_never_double_assigns():
+    app, repo, device_id = _single_stirrer_app()
+    client = app.test_client()
+    first = client.post("/api/experiments", json=CREATE).get_json()
+    second = client.post(
+        "/api/experiments",
+        json={**CREATE, "batch_id": "20260723-AEM-02"},
+    ).get_json()
+    repo._conn.execute(
+        """UPDATE experiment SET current_step_code='R201-10'
+           WHERE id IN (?,?)""",
+        (first["id"], second["id"]),
+    )
+    repo._conn.commit()
+
+    first_detail = client.get(
+        f"/api/experiments/{first['id']}"
+    ).get_json()
+    second_detail = client.get(
+        f"/api/experiments/{second['id']}"
+    ).get_json()
+    workbench = client.get("/api/workbench").get_json()
+
+    assert first_detail["process_status"]["stirrer"]["bound"] is True
+    assert (
+        first_detail["process_status"]["stirrer"]["device"]["id"]
+        == device_id
+    )
+    assert second_detail["process_status"]["stirrer"]["bound"] is False
+    assert workbench["active_count"] == 2
+    assert len(workbench["reservations"]) == 1
+    assert workbench["reservations"][0]["experiment_id"] == first["id"]
 
 
 def test_multiple_stirrers_are_visible_and_batch_selection_is_explicit():

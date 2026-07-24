@@ -122,3 +122,16 @@ def test_reconnect_and_disconnect_keep_connection_owned_by_engine():
         assert engine._get_adapter(device_id) is None
     finally:
         engine.stop()
+
+
+def test_engine_start_closes_run_left_open_by_previous_process():
+    repo = Repository(":memory:")
+    device_id = repo.upsert_device("pump-stale", "tyd02")
+    run_id = repo.open_run(device_id, 1, 1000, {})
+    engine = Engine(repo, [], sample_interval_s=0.02, adapter_factory=lambda _: None)
+
+    engine.start()
+
+    stale = repo.get_run(run_id)
+    assert stale.ended_ms is not None
+    assert stale.end_status == "interrupted_restart"

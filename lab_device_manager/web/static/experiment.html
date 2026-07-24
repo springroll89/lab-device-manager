@@ -28,6 +28,8 @@
     .brand img{width:44px;height:44px;object-fit:contain;border-radius:10px}
     .brand strong{display:block;font-size:18px;letter-spacing:.02em}
     .top-actions{display:flex;align-items:center;gap:10px}
+    .scan-video{width:100%;min-height:240px;max-height:55vh;object-fit:cover;
+      border-radius:14px;background:#020709}
     .mode{padding:7px 12px;border-radius:999px;color:#ffe0a3;background:rgba(245,189,79,.12);
       border:1px solid rgba(245,189,79,.32);font-size:12px}
     .link-btn,.ghost,.secondary,.primary,.danger{border-radius:12px;padding:11px 16px;min-height:44px;
@@ -171,6 +173,9 @@
     </a>
     <div class="top-actions">
       <span class="mode">纸电并行验证</span>
+      <button id="cameraScanButton" class="secondary" type="button">扫码</button>
+      <a class="link-btn" href="/materials">原材料</a>
+      <a class="link-btn" href="/measurement-station">粘度工位</a>
       <a class="link-btn" href="/">设备看板</a>
       <div data-account-menu></div>
     </div>
@@ -211,7 +216,7 @@
           </div>
         </section>
         <section class="panel">
-          <div class="panel-head"><h2>最近批次</h2><button class="ghost" id="refreshList" type="button">刷新</button></div>
+          <div class="panel-head"><div><h2>进行中实验</h2><p id="workbenchSummary" style="margin:4px 0 0">正在读取并行批次…</p></div><button class="ghost" id="refreshList" type="button">刷新</button></div>
           <div class="panel-body"><div id="experimentList" class="experiment-list"></div></div>
         </section>
       </div>
@@ -462,8 +467,28 @@
     </form>
   </dialog>
 
+  <dialog id="cameraScanDialog" class="trace-dialog">
+    <div class="dialog-head">
+      <div>
+        <h2>扫描实物或设备标签</h2>
+        <p id="cameraScanStatus">正在准备摄像头…</p>
+      </div>
+      <button id="cameraScanClose" class="dialog-close" type="button">关闭</button>
+    </div>
+    <video id="cameraScanVideo" class="scan-video" playsinline muted></video>
+    <div class="field" style="margin-top:14px">
+      <label for="cameraScanManual">扫码枪或手工输入</label>
+      <input id="cameraScanManual" autocomplete="off" placeholder="二维码、条码或追溯编号">
+    </div>
+    <div class="dialog-actions">
+      <button id="cameraScanManualSubmit" class="primary" type="button">确认编号</button>
+    </div>
+  </dialog>
+
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/static/account-menu.js"></script>
+  <script src="/static/outbox.js"></script>
+  <script src="/static/scanner.js"></script>
   <script src="/static/experiment.js"></script>
 </body>
 </html>
