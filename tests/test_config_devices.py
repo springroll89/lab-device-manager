@@ -21,6 +21,53 @@ def test_defaults(tmp_path):
     p.write_text('db_path = "./x.db"\n', encoding="utf-8")  # no devices key -> no devices
     cfg = load_config(str(p))
     assert cfg.web_port == 7800 and cfg.sample_interval_ms == 1000 and cfg.devices == ()
+    assert cfg.web_host == "0.0.0.0"
+    assert cfg.public_base_url == ""
+    assert cfg.tls_certfile == ""
+    assert cfg.tls_keyfile == ""
+
+
+def test_loads_lan_and_https_settings(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(textwrap.dedent("""
+        web_host = "0.0.0.0"
+        web_port = 8443
+        public_base_url = "https://lab.puricore.example"
+        tls_certfile = "/etc/puricore/fullchain.pem"
+        tls_keyfile = "/etc/puricore/privkey.pem"
+    """), encoding="utf-8")
+
+    cfg = load_config(str(p))
+
+    assert cfg.web_host == "0.0.0.0"
+    assert cfg.web_port == 8443
+    assert cfg.public_base_url == "https://lab.puricore.example"
+    assert cfg.tls_certfile.endswith("fullchain.pem")
+    assert cfg.tls_keyfile.endswith("privkey.pem")
+
+
+def test_rejects_incomplete_tls_pair(tmp_path):
+    import pytest
+    p = tmp_path / "c.toml"
+    p.write_text(
+        'tls_certfile = "/tmp/fullchain.pem"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="tls_certfile.*tls_keyfile"):
+        load_config(str(p))
+
+
+def test_rejects_non_http_public_base_url(tmp_path):
+    import pytest
+    p = tmp_path / "c.toml"
+    p.write_text(
+        'public_base_url = "javascript:alert(1)"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="public_base_url"):
+        load_config(str(p))
 
 
 def test_rejects_devices_dict(tmp_path):

@@ -3,6 +3,7 @@ import pathlib
 import secrets
 import tomllib
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from lab_device_manager.runtime.types import DeviceConfig
 
 
@@ -26,6 +27,10 @@ class Config:
     db_path: str = "./data/lab_device_manager.db"
     sample_interval_ms: int = 1000
     web_port: int = 7800
+    web_host: str = "0.0.0.0"
+    public_base_url: str = ""
+    tls_certfile: str = ""
+    tls_keyfile: str = ""
     auto_open_browser: bool = True
     devices: tuple = ()   # tuple[DeviceConfig]
     secret_key: str = ""
@@ -47,10 +52,39 @@ def load_config(path: str | None = None) -> Config:
     ) for dev in d.get("devices", []))
     raw_secret = d.get("secret_key", "")
     secret_key = raw_secret if raw_secret else _load_or_create_secret()
+    tls_certfile = str(d.get("tls_certfile", "")).strip()
+    tls_keyfile = str(d.get("tls_keyfile", "")).strip()
+    if bool(tls_certfile) != bool(tls_keyfile):
+        raise ValueError(
+            "config: tls_certfile and tls_keyfile must be configured together"
+        )
+    public_base_url = str(
+        d.get("public_base_url", "")
+    ).strip().rstrip("/")
+    if public_base_url:
+        parsed = urlparse(public_base_url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "config: public_base_url must be an http(s) origin"
+            )
+        if tls_certfile and parsed.scheme != "https":
+            raise ValueError(
+                "config: public_base_url must use https when TLS is enabled"
+            )
     return Config(
         db_path=d.get("db_path", "./data/lab_device_manager.db"),
         sample_interval_ms=d.get("sample_interval_ms", 1000),
         web_port=d.get("web_port", 7800),
+        web_host=d.get("web_host", "0.0.0.0"),
+        public_base_url=public_base_url,
+        tls_certfile=tls_certfile,
+        tls_keyfile=tls_keyfile,
         auto_open_browser=d.get("auto_open_browser", True),
         devices=devs,
         secret_key=secret_key,

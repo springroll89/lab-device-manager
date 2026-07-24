@@ -363,6 +363,159 @@ def test_material_lot_can_be_left_blank_for_fast_tablet_confirmation():
     assert detail["materials"][0]["lot_no"] == ""
 
 
+def test_scanned_material_container_is_decremented_and_audited():
+    service, repo = _service()
+    experiment = service.create_experiment(CREATE)
+    container = service.create_material_container(
+        {
+            "container_code": "RM-TEOS-0001",
+            "external_barcode": "6901234567890",
+            "material_name": "TEOS",
+            "supplier_lot": "SUP-01",
+            "quantity_remaining": 20,
+            "unit": "mL",
+            "created_by": "张三",
+            "client_event_id": "register-material-1",
+        }
+    )
+    for index, step in enumerate(("R201-01", "R201-02"), start=1):
+        current = service.get_experiment(
+            experiment["id"]
+        )["experiment"]
+        started = service.start_step(
+            experiment["id"],
+            step,
+            current["row_version"],
+            _event("start-material", index),
+        )
+        service.complete_step(
+            experiment["id"],
+            step,
+            started["experiment"]["row_version"],
+            VALID_RESULTS[step],
+            _event("complete-material", index),
+        )
+    current = service.get_experiment(experiment["id"])["experiment"]
+    started = service.start_step(
+        experiment["id"],
+        "R201-03",
+        current["row_version"],
+        _event("start-material", 3),
+    )
+    service.complete_step(
+        experiment["id"],
+        "R201-03",
+        started["experiment"]["row_version"],
+        {
+            "materials": [
+                {
+                    "name": "TEOS",
+                    "lot": "SUP-01",
+                    "actual": 7.5,
+                    "unit": "mL",
+                    "material_container_id": container["id"],
+                    "container_code": container["container_code"],
+                }
+            ]
+        },
+        _event("complete-material", 3),
+    )
+
+    updated = repo.experiments.get_material_container_by_code(
+        "RM-TEOS-0001"
+    )
+    events = repo.experiments.list_material_container_events(
+        container["id"]
+    )
+
+    assert updated["quantity_remaining"] == 12.5
+    assert updated["opened_on"] is not None
+    assert [row["event_type"] for row in events] == [
+        "registered",
+        "opened",
+        "used",
+    ]
+    assert events[-1]["experiment_id"] == experiment["id"]
+    assert events[-1]["quantity"] == 7.5
+
+
+def test_expired_material_container_cannot_be_registered():
+    service, _ = _service()
+    with pytest.raises(R201Error, match="有效期"):
+        service.create_material_container(
+            {
+                "container_code": "RM-OLD-0001",
+                "material_name": "过期原料",
+                "expires_on": "2020-01-01",
+                "quantity_remaining": 10,
+                "unit": "mL",
+                "created_by": "张三",
+                "client_event_id": "register-old-material",
+            }
+        )
+
+
+def test_process_devices_are_released_when_their_physical_stage_finishes():
+    service, repo = _service()
+    experiment = service.create_experiment(CREATE)
+    pump_id = repo.upsert_device("pump-1", "tyd02", "注射泵")
+    repo.experiments.reserve_process_device(
+        experiment["id"],
+        pump_id,
+        "tyd02",
+        "张三",
+        None,
+        1000,
+    )
+    service.add_data_source(
+        experiment["id"],
+        {
+            **_event("bind-release", 1),
+            "device_id": pump_id,
+            "device_role": "acid_pump",
+            "metric_key": "acc_volume",
+            "linked_at_ms": 1000,
+            "link_method": "manual",
+        },
+    )
+    steps = (
+        "R201-01",
+        "R201-02",
+        "R201-03",
+        "R201-04",
+        "R201-10",
+        "R201-20",
+        "R201-30",
+        "R201-31",
+    )
+    for index, step in enumerate(steps, start=1):
+        current = service.get_experiment(
+            experiment["id"]
+        )["experiment"]
+        started = service.start_step(
+            experiment["id"],
+            step,
+            current["row_version"],
+            _event("start-release", index),
+        )
+        completed = service.complete_step(
+            experiment["id"],
+            step,
+            started["experiment"]["row_version"],
+            VALID_RESULTS[step],
+            _event("complete-release", index),
+        )
+
+    assert completed["experiment"]["current_step_code"] == "R201-32"
+    assert repo.experiments.list_device_reservations(
+        experiment["id"]
+    ) == []
+    bindings = repo.experiments.list_data_source_bindings(
+        experiment["id"]
+    )
+    assert bindings[0]["unlinked_at_ms"] is not None
+
+
 def test_create_rejects_invalid_membrane_system_and_target_range():
     service, _ = _service()
     with pytest.raises(R201Error, match="membrane_system"):

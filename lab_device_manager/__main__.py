@@ -14,12 +14,33 @@ def main():  # pragma: no cover - wiring + server lifecycle
     eng = Engine(repo, list(cfg.devices), cfg.sample_interval_ms / 1000.0,
                  adapter_factory=serial_adapter_factory)
     eng.start()
-    app = create_app(eng, repo, secret_key=cfg.secret_key)
+    app = create_app(
+        eng,
+        repo,
+        secret_key=cfg.secret_key,
+        public_base_url=cfg.public_base_url,
+    )
     try:
         if cfg.auto_open_browser:
-            url = f"http://127.0.0.1:{cfg.web_port}/"
+            scheme = "https" if cfg.tls_certfile else "http"
+            url = (
+                f"{cfg.public_base_url}/"
+                if cfg.public_base_url
+                else f"{scheme}://127.0.0.1:{cfg.web_port}/"
+            )
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-        app.run(host="127.0.0.1", port=cfg.web_port, threaded=True, use_reloader=False)
+        ssl_context = (
+            (cfg.tls_certfile, cfg.tls_keyfile)
+            if cfg.tls_certfile and cfg.tls_keyfile
+            else None
+        )
+        app.run(
+            host=cfg.web_host,
+            port=cfg.web_port,
+            threaded=True,
+            use_reloader=False,
+            ssl_context=ssl_context,
+        )
     finally:
         eng.stop()
         repo.close()

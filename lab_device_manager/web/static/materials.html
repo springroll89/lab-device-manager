@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>原材料管理</title>
+  <link rel="stylesheet" href="/static/puricore-theme.css">
+  <style>
+    body{margin:0;background:#081116;color:#ecf5f4;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;border-bottom:1px solid #24404b}
+    header div{display:flex;align-items:center;gap:10px}a,button{min-height:44px;padding:10px 16px;border-radius:11px;border:1px solid #31505c;background:#122731;color:#eef;text-decoration:none;font:inherit;cursor:pointer}
+    button.primary{background:#69dec0;color:#071712;border:0;font-weight:700}
+    main{width:min(1180px,100%);margin:auto;padding:28px 18px}.layout{display:grid;grid-template-columns:minmax(300px,420px) 1fr;gap:18px}
+    .panel{padding:20px;border:1px solid #24404b;border-radius:16px;background:#102029}.panel h2{margin-top:0}
+    form{display:grid;gap:13px}.field{display:grid;gap:6px}.field label,.muted{color:#8ca7aa;font-size:13px}
+    input,select{width:100%;padding:12px;border-radius:10px;border:1px solid #31505c;background:#081116;color:#fff;font:inherit}
+    .inline{display:flex;gap:8px}.inline input{flex:1}.status{min-height:22px;color:#69dec0}.status.error{color:#ff8f8f}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #24404b;white-space:nowrap}th{color:#8ca7aa}
+    .available{color:#69dec0}.empty,.expired,.quarantined,.disposed{color:#ffb267}
+    dialog{width:min(680px,calc(100% - 24px));border:1px solid #31505c;border-radius:18px;background:#102029;color:#fff;padding:20px}
+    video{width:100%;min-height:280px;background:#020709;border-radius:14px;object-fit:cover}
+    @media(max-width:850px){.layout{grid-template-columns:1fr}header{padding:14px 16px;align-items:flex-start}header>div{flex-wrap:wrap;justify-content:flex-end}}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>原材料管理</strong>
+    <div>
+      <a href="/experiments">实验工作台</a>
+      <a href="/">设备看板</a>
+      <span data-account-menu></span>
+    </div>
+  </header>
+  <main>
+    <div class="layout">
+      <section class="panel">
+        <h2>登记一瓶原材料</h2>
+        <p class="muted">先扫瓶身原条码，再补材料名称、批号和余量。保存后打印耐久标签贴在瓶身。</p>
+        <form id="materialForm">
+          <div class="field">
+            <label for="externalBarcode">供应商条码或二维码</label>
+            <div class="inline">
+              <input id="externalBarcode" placeholder="可扫描，也可留空">
+              <button id="scanSupplierCode" type="button">扫码</button>
+            </div>
+          </div>
+          <div class="field"><label for="containerCode">系统容器编号</label><input id="containerCode" required></div>
+          <div class="field"><label for="materialName">材料名称</label><input id="materialName" required placeholder="例如 TEOS、乙醇"></div>
+          <div class="field"><label for="supplier">供应商</label><input id="supplier" placeholder="可选"></div>
+          <div class="field"><label for="supplierLot">供应商批号</label><input id="supplierLot" placeholder="建议填写"></div>
+          <div class="field"><label for="expiresOn">有效期</label><input id="expiresOn" type="date"></div>
+          <div class="inline">
+            <div class="field" style="flex:1"><label for="quantity">当前余量</label><input id="quantity" type="number" min="0" step="any"></div>
+            <div class="field" style="width:120px"><label for="unit">单位</label><select id="unit"><option>mL</option><option>g</option><option>kg</option><option>L</option></select></div>
+          </div>
+          <div id="formStatus" class="status" role="status"></div>
+          <button class="primary" type="submit">保存并打印标签</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="inline" style="align-items:center;justify-content:space-between">
+          <div><h2 style="margin-bottom:4px">已登记原材料</h2><span id="inventorySummary" class="muted">正在读取…</span></div>
+          <button id="refreshMaterials" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>系统编号</th><th>材料</th><th>供应商批号</th><th>有效期</th><th>余量</th><th>状态</th><th></th></tr></thead>
+            <tbody id="materialRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="cameraScanDialog">
+    <h2>扫描瓶身条码</h2>
+    <p id="cameraScanStatus" class="muted"></p>
+    <video id="cameraScanVideo" playsinline muted></video>
+    <input id="cameraScanManual" placeholder="扫码枪或手工输入">
+    <div class="inline" style="margin-top:12px">
+      <button id="cameraScanManualSubmit" class="primary" type="button">确认编号</button>
+      <button id="cameraScanClose" type="button">关闭</button>
+    </div>
+  </dialog>
+  <dialog id="materialDetailDialog">
+    <div class="inline" style="align-items:center;justify-content:space-between">
+      <h2 id="materialDetailTitle">原材料记录</h2>
+      <button id="materialDetailClose" type="button">关闭</button>
+    </div>
+    <div id="materialDetailBody"></div>
+  </dialog>
+  <script src="/static/account-menu.js"></script>
+  <script src="/static/scanner.js"></script>
+  <script src="/static/materials.js"></script>
+</body>
+</html>

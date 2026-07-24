@@ -6,7 +6,17 @@ import time
 from io import BytesIO
 
 import sqlite3
-from flask import Flask, Response, abort, jsonify, request, send_from_directory, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    request,
+    send_from_directory,
+    stream_with_context,
+    url_for,
+)
 from openpyxl import Workbook
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -32,9 +42,16 @@ from lab_device_manager.experiments.service import (
     STEP_LABELS,
 )
 from lab_device_manager.web.auth import AuthManager
+from lab_device_manager.web.barcode import (
+    BarcodeImageError,
+    MAX_BARCODE_IMAGE_BYTES,
+    decode_barcode_image,
+)
 from lab_device_manager.web.trace_labels import (
+    material_container_label_html,
     qr_svg,
     storage_location_label_html,
+    trace_qr_payload,
     trace_labels_html,
 )
 from lab_device_manager.web.whd46 import create_whd46_blueprint
@@ -400,11 +417,14 @@ def _build_experiment_pdf(detail: dict) -> bytes:
         )
     )
     story.extend([parameter_table, Spacer(1, 14), Paragraph("物料使用", styles["Heading2"])])
-    material_rows = [["物料", "批号", "有效期", "理论量", "实际量", "外观"]]
+    material_rows = [
+        ["物料", "容器编号", "批号", "有效期", "理论量", "实际量", "外观"]
+    ]
     for item in detail["materials"]:
         material_rows.append(
             [
                 item["material_name"],
+                item.get("container_code") or "—",
                 item["lot_no"],
                 item["expires_at"] or "—",
                 (
@@ -418,7 +438,7 @@ def _build_experiment_pdf(detail: dict) -> bytes:
         )
     material_table = Table(
         material_rows,
-        colWidths=[85, 85, 75, 80, 80, 105],
+        colWidths=[68, 82, 70, 66, 68, 68, 88],
         repeatRows=1,
     )
     material_table.setStyle(
@@ -650,11 +670,18 @@ def _build_experiment_pdf(detail: dict) -> bytes:
     return buf.getvalue()
 
 
-def create_app(engine, repo, secret_key: str = ""):
+def create_app(
+    engine,
+    repo,
+    secret_key: str = "",
+    public_base_url: str = "",
+):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
+    app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024
     r201 = R201Service(repo)
     app.secret_key = secret_key if secret_key else _load_or_create_secret()
     auth = AuthManager(app, repo)
+    app.config["PUBLIC_BASE_URL"] = str(public_base_url or "").rstrip("/")
     app.register_blueprint(create_whd46_blueprint(engine, repo))
     login_required = auth.login_required
     _current_operator = auth.current_operator
@@ -668,6 +695,9 @@ def create_app(engine, repo, secret_key: str = ""):
         body[field] = _current_operator()
         body[f"{field}_user_id"] = _current_user_id()
         return body
+
+    def _trace_base_url() -> str:
+        return app.config["PUBLIC_BASE_URL"] or request.url_root.rstrip("/")
 
     def _device_capture(experiment_id: int):
         captured_at_ms = int(time.time() * 1000)
@@ -686,6 +716,18 @@ def create_app(engine, repo, secret_key: str = ""):
             for role, device_ids in role_candidates.items()
             if len(device_ids) == 1
         }
+        measurement_reservations = [
+            item
+            for item in repo.experiments.list_device_reservations(
+                experiment_id
+            )
+            if item["purpose"] == "measurement"
+            and item["device_type"] == "viscometer"
+        ]
+        if len(measurement_reservations) == 1:
+            role_device_ids["viscometer"] = measurement_reservations[0][
+                "device_id"
+            ]
         devices = []
         for device_id, config in engine.device_map().items():
             snapshot = latest.get(device_id)
@@ -747,6 +789,27 @@ def create_app(engine, repo, secret_key: str = ""):
                 fresh_by_type.setdefault(config.type, []).append(device_id)
 
         for device_type, role_metrics in PROCESS_DEVICE_BINDINGS.items():
+            if device_type == "viscometer":
+                continue
+            exclusive_steps = {
+                "stirrer": {
+                    "R201-10",
+                    "R201-20",
+                    "R201-30",
+                    "R201-31",
+                    "R201-32",
+                    "R201-40",
+                    "R201-50",
+                    "R201-60",
+                },
+                "tyd02": {"R201-30", "R201-31"},
+            }
+            if (
+                device_type in exclusive_steps
+                and experiment["current_step_code"]
+                not in exclusive_steps[device_type]
+            ):
+                continue
             roles = tuple(role_metrics)
             bound_ids = {
                 device_id
@@ -768,6 +831,18 @@ def create_app(engine, repo, secret_key: str = ""):
                 elif len(configured_candidates) == 1:
                     selected_device_id = configured_candidates[0]
                 else:
+                    continue
+            if device_type in ("stirrer", "tyd02"):
+                try:
+                    repo.experiments.reserve_process_device(
+                        experiment_id,
+                        selected_device_id,
+                        device_type,
+                        experiment["operator"],
+                        experiment.get("operator_user_id"),
+                        now_ms,
+                    )
+                except RuntimeError:
                     continue
             for role, metric_key in role_metrics.items():
                 if active_by_role.get(role):
@@ -807,6 +882,18 @@ def create_app(engine, repo, secret_key: str = ""):
     def experiments_page(experiment_id=None):
         return send_from_directory(app.static_folder, "experiment.html")
 
+    @app.get("/measurement-station")
+    @login_required
+    def measurement_station_page():
+        return send_from_directory(
+            app.static_folder, "measurement-station.html"
+        )
+
+    @app.get("/materials")
+    @login_required
+    def materials_page():
+        return send_from_directory(app.static_folder, "materials.html")
+
     def _r201_error(exc: Exception):
         if isinstance(exc, R201Error):
             payload = {"error": str(exc)}
@@ -820,11 +907,13 @@ def create_app(engine, repo, secret_key: str = ""):
             return jsonify({"error": "database constraint failed"}), 409
         raise exc
 
-    def _experiment_detail(experiment_id: int):
-        _ensure_automatic_sources(experiment_id)
-        detail = r201.get_experiment(experiment_id)
+    def _device_surface(data_sources: list[dict]) -> dict:
         latest = engine.latest()
         device_map = engine.device_map()
+        reservations = {
+            item["device_id"]: item
+            for item in repo.experiments.list_device_reservations()
+        }
         devices = []
         for device_id, config in device_map.items():
             snapshot = latest.get(device_id)
@@ -835,15 +924,15 @@ def create_app(engine, repo, secret_key: str = ""):
                     "alias": config.alias,
                     "type": config.type,
                     "latest": _snap_to_dict(snapshot) if snapshot else None,
+                    "reservation": reservations.get(device_id),
                 }
             )
-        detail["available_devices"] = devices
         device_by_id = {item["id"]: item for item in devices}
 
         def process_device(role):
             bindings = [
                 item
-                for item in detail["data_sources"]
+                for item in data_sources
                 if item["device_role"] == role
                 and item["unlinked_at_ms"] is None
             ]
@@ -882,18 +971,61 @@ def create_app(engine, repo, secret_key: str = ""):
                 "latest": latest_snapshot,
             }
 
-        detail["process_status"] = {
-            "acid_pump": process_device("acid_pump"),
-            "reaction_temp": process_device("reaction_temp"),
-            "stirrer": process_device("stirrer"),
-            "viscometer": process_device("viscometer"),
-            "environment": process_device("environment"),
+        return {
+            "available_devices": devices,
+            "process_status": {
+                "acid_pump": process_device("acid_pump"),
+                "reaction_temp": process_device("reaction_temp"),
+                "stirrer": process_device("stirrer"),
+                "viscometer": process_device("viscometer"),
+                "environment": process_device("environment"),
+            },
         }
+
+    def _experiment_detail(experiment_id: int):
+        _ensure_automatic_sources(experiment_id)
+        detail = r201.get_experiment(experiment_id)
+        detail.update(_device_surface(detail["data_sources"]))
         return detail
 
     @app.get("/api/experiments")
     def api_experiments():
         return jsonify(r201.list_experiments())
+
+    @app.get("/api/workbench")
+    def api_workbench():
+        user = auth.current_user() or {}
+        reservations = repo.experiments.list_device_reservations()
+        by_experiment = {}
+        for reservation in reservations:
+            by_experiment.setdefault(
+                reservation["experiment_id"], []
+            ).append(reservation)
+        experiments = [
+            {
+                **item,
+                "device_reservations": by_experiment.get(item["id"], []),
+            }
+            for item in r201.list_experiments()
+            if item["status"] in ("draft", "in_progress", "pending_review")
+            and (
+                user.get("role") in ("super_admin", "supervisor")
+                or item.get("operator_user_id") == user.get("id")
+            )
+        ]
+        return jsonify(
+            {
+                "experiments": experiments,
+                "active_count": len(
+                    [
+                        item
+                        for item in experiments
+                        if item["status"] in ("draft", "in_progress")
+                    ]
+                ),
+                "reservations": reservations,
+            }
+        )
 
     @app.get("/api/experiments/next-batch-id")
     def api_next_batch_id():
@@ -935,6 +1067,13 @@ def create_app(engine, repo, secret_key: str = ""):
     def api_experiment_detail(experiment_id):
         try:
             return jsonify(_experiment_detail(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/experiments/<int:experiment_id>/revision")
+    def api_experiment_revision(experiment_id):
+        try:
+            return jsonify(r201.experiment_revision(experiment_id))
         except R201Error as exc:
             return _r201_error(exc)
 
@@ -1103,17 +1242,215 @@ def create_app(engine, repo, secret_key: str = ""):
         except R201Error as exc:
             return _r201_error(exc)
 
+    @app.get("/api/scan/resolve")
+    def api_scan_resolve():
+        try:
+            return jsonify(
+                r201.resolve_scan_code(request.args.get("code", ""))
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.post("/api/scan/decode")
+    def api_scan_decode():
+        if request.content_length and request.content_length > (
+            MAX_BARCODE_IMAGE_BYTES + 64 * 1024
+        ):
+            return jsonify({"error": "image exceeds 2 MB"}), 413
+        upload = request.files.get("image")
+        if upload is None:
+            return jsonify({"error": "image is required"}), 400
+        try:
+            decoded = decode_barcode_image(
+                upload.stream.read(MAX_BARCODE_IMAGE_BYTES + 1)
+            )
+        except BarcodeImageError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if decoded is None:
+            return jsonify({"error": "no barcode found"}), 422
+        return jsonify(decoded)
+
+    @app.get("/scan/<path:code>")
+    def scan_entry(code):
+        try:
+            found = r201.resolve_scan_code(code)
+        except R201Error as exc:
+            return _r201_error(exc)
+        if found["kind"] == "trace_item":
+            item = found["item"]
+            return redirect(
+                url_for(
+                    "experiments_page",
+                    experiment_id=item["experiment_id"],
+                    scan=code,
+                )
+            )
+        if found["kind"] == "material_container":
+            return redirect(url_for("materials_page", scan=code))
+        return redirect(url_for("experiments_page", scan=code))
+
+    @app.get("/api/material-containers")
+    def api_material_containers():
+        return jsonify(r201.list_material_containers())
+
+    @app.post("/api/material-containers")
+    @auth.roles_required("super_admin", "supervisor")
+    def api_create_material_container():
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body, "created_by")
+        body.setdefault(
+            "client_event_id",
+            f"material-register-{body.get('container_code', '')}",
+        )
+        try:
+            return jsonify(
+                r201.create_material_container(body)
+            ), 201
+        except R201Error as exc:
+            return _r201_error(exc)
+
+    @app.get("/api/material-containers/<int:container_id>")
+    def api_material_container_detail(container_id):
+        container = repo.experiments.get_material_container_by_id(
+            container_id
+        )
+        if container is None:
+            return _r201_error(
+                R201Error("material container not found", 404)
+            )
+        return jsonify(
+            {
+                "container": container,
+                "events": (
+                    repo.experiments.list_material_container_events(
+                        container_id
+                    )
+                ),
+            }
+        )
+
+    @app.get("/api/material-containers/<int:container_id>/label")
+    def api_material_container_label(container_id):
+        container = repo.experiments.get_material_container_by_id(
+            container_id
+        )
+        if container is None:
+            return _r201_error(
+                R201Error("material container not found", 404)
+            )
+        try:
+            copies = int(request.args.get("copies", "1"))
+        except ValueError:
+            return _r201_error(R201Error("copies must be an integer"))
+        if not 1 <= copies <= 20:
+            return _r201_error(
+                R201Error("copies must be between 1 and 20")
+            )
+        return Response(
+            material_container_label_html(container, copies),
+            mimetype="text/html",
+        )
+
+    @app.get("/api/measurement-station")
+    def api_measurement_station():
+        user = auth.current_user() or {}
+        experiments = [
+            item
+            for item in r201.list_experiments()
+            if item["status"] in ("draft", "in_progress")
+            and item["current_step_code"] == "R201-50"
+            and (
+                (
+                    repo.experiments.get_active_step(item["id"])
+                    or {}
+                ).get("step_code")
+                == "R201-50"
+            )
+            and (
+                user.get("role") in ("super_admin", "supervisor")
+                or item.get("operator_user_id") == user.get("id")
+            )
+        ]
+        viscometers = [
+            {
+                "id": device_id,
+                "name": config.name,
+                "alias": config.alias,
+                "latest": (
+                    _snap_to_dict(engine.latest().get(device_id))
+                    if engine.latest().get(device_id)
+                    else None
+                ),
+            }
+            for device_id, config in engine.device_map().items()
+            if config.type == "viscometer"
+        ]
+        return jsonify(
+            {
+                "experiments": experiments,
+                "viscometers": viscometers,
+                "reservations": repo.experiments.list_device_reservations(),
+            }
+        )
+
+    @app.post("/api/measurement-station/claim")
+    def api_claim_measurement_station():
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        try:
+            device_id = int(body.get("device_id"))
+            config = engine.device_map().get(device_id)
+            if config is None or config.type != "viscometer":
+                raise R201Error("请选择已配置的粘度计", 400)
+            return jsonify(
+                r201.claim_viscometer(
+                    int(body.get("experiment_id")),
+                    device_id,
+                    body,
+                )
+            )
+        except (R201Error, TypeError, ValueError) as exc:
+            if isinstance(exc, R201Error):
+                return _r201_error(exc)
+            return _r201_error(R201Error("experiment_id and device_id are required"))
+
+    @app.post("/api/measurement-station/release")
+    def api_release_measurement_station():
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        try:
+            device_id = int(body.get("device_id"))
+            config = engine.device_map().get(device_id)
+            if config is None or config.type != "viscometer":
+                raise R201Error("请选择已配置的粘度计", 400)
+            return jsonify(
+                r201.release_viscometer(
+                    int(body.get("experiment_id")),
+                    device_id,
+                    body,
+                )
+            )
+        except (R201Error, TypeError, ValueError) as exc:
+            if isinstance(exc, R201Error):
+                return _r201_error(exc)
+            return _r201_error(R201Error("experiment_id and device_id are required"))
+
     @app.get("/api/trace/qr.svg")
     def api_trace_qr():
         try:
-            found = r201.lookup_trace_code(
+            found = r201.resolve_scan_code(
                 request.args.get("code", "")
             )
             if found["kind"] == "trace_item":
                 code = found["item"]["item_code"]
-            else:
+            elif found["kind"] == "storage_location":
                 code = found["location"]["location_code"]
-            return Response(qr_svg(code), mimetype="image/svg+xml")
+            else:
+                code = found["material"]["container_code"]
+            payload = trace_qr_payload(_trace_base_url(), code)
+            response = Response(qr_svg(payload), mimetype="image/svg+xml")
+            response.headers["X-QR-Payload"] = payload
+            return response
         except R201Error as exc:
             return _r201_error(exc)
 
@@ -1178,7 +1515,24 @@ def create_app(engine, repo, secret_key: str = ""):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
+        selected_viscometer = (
+            body["device_capture"]
+            .get("role_device_ids", {})
+            .get("viscometer")
+        )
+        if selected_viscometer is None:
+            candidates = [
+                device_id
+                for device_id, config in engine.device_map().items()
+                if config.type == "viscometer"
+            ]
+            if len(candidates) == 1:
+                selected_viscometer = candidates[0]
         try:
+            if selected_viscometer is not None:
+                r201.claim_viscometer(
+                    experiment_id, int(selected_viscometer), body
+                )
             return jsonify(
                 r201.record_viscosity(
                     experiment_id, body
@@ -1186,6 +1540,14 @@ def create_app(engine, repo, secret_key: str = ""):
             ), 201
         except R201Error as exc:
             return _r201_error(exc)
+        finally:
+            if selected_viscometer is not None:
+                try:
+                    r201.release_viscometer(
+                        experiment_id, int(selected_viscometer), body
+                    )
+                except R201Error:
+                    pass
 
     @app.post("/api/experiments/<int:experiment_id>/data-sources")
     def api_add_experiment_data_source(experiment_id):
@@ -1300,26 +1662,65 @@ def create_app(engine, repo, secret_key: str = ""):
     @app.get("/api/experiments/<int:experiment_id>/stream")
     def api_experiment_stream(experiment_id):
         try:
-            detail = _experiment_detail(experiment_id)
+            r201.experiment_revision(experiment_id)
         except R201Error as exc:
             return _r201_error(exc)
-        payload = {
-            "experiment": detail["experiment"],
-            "endpoint_ready": detail["endpoint_ready"],
-            "available_devices": detail["available_devices"],
-            "process_status": detail["process_status"],
-            "temperature_series": detail["temperature_series"],
-            "temperature_checkpoints": detail["temperature_checkpoints"],
-            "reached_temperature": detail["reached_temperature"],
-            "telemetry_gaps": detail["telemetry_gaps"],
-            "telemetry_integrity_status": detail["telemetry_integrity_status"],
-        }
-        body = (
-            "retry: 1000\n"
-            "event: snapshot\n"
-            f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+        once = request.args.get("once") == "1"
+
+        @stream_with_context
+        def generate():
+            previous = None
+            heartbeat = 0
+            while True:
+                try:
+                    experiment = repo.experiments.get_experiment(
+                        experiment_id
+                    )
+                    if experiment is None:
+                        return
+                    surface = _device_surface(
+                        repo.experiments.list_data_source_bindings(
+                            experiment_id
+                        )
+                    )
+                    payload = {
+                        "experiment": experiment,
+                        "revision": r201.experiment_revision(
+                            experiment_id
+                        )["revision"],
+                        **surface,
+                    }
+                    encoded = _json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    if encoded != previous:
+                        previous = encoded
+                        yield (
+                            "retry: 1000\n"
+                            "event: snapshot\n"
+                            f"data: {encoded}\n\n"
+                        )
+                    elif heartbeat >= 14:
+                        heartbeat = 0
+                        yield ": keepalive\n\n"
+                    else:
+                        heartbeat += 1
+                except (R201Error, GeneratorExit):
+                    return
+                if once:
+                    return
+                time.sleep(1)
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
-        return Response(body, mimetype="text/event-stream")
 
     @app.get("/api/experiments/<int:experiment_id>/report.pdf")
     def api_experiment_report(experiment_id):

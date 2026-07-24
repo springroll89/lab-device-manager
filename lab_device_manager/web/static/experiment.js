@@ -186,6 +186,8 @@ let flushingOutbox = false;
 let liveConnecting = false;
 let viewedStepCode = null;
 let currentUserId = null;
+let revisionToken = null;
+let detailLoading = false;
 const openDevicePickers = new Set();
 const pendingDeviceSelections = new Map();
 const stepFormUiState = new Map();
@@ -645,7 +647,15 @@ async function loadList() {
   const list = byId("experimentList");
   list.textContent = "";
   try {
-    const experiments = await api("/api/experiments");
+    const workbench = await api("/api/workbench");
+    const experiments = workbench.experiments || [];
+    if (byId("workbenchSummary")) {
+      byId("workbenchSummary").textContent = `${
+        workbench.active_count
+      } 个批次正在执行 · ${
+        workbench.reservations?.length || 0
+      } 台设备已占用`;
+    }
     if (!experiments.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -663,7 +673,14 @@ async function loadList() {
       batch.textContent = item.batch_id;
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent = `${item.membrane_system} · ${item.recipe_no}/${item.recipe_version} · 当前 ${item.current_step_code}`;
+      const devices = (item.device_reservations || []).map(
+        reservation => reservation.device_alias || reservation.device_name
+      );
+      meta.textContent = `${item.membrane_system} · ${
+        item.recipe_no
+      }/${item.recipe_version} · 当前 ${
+        item.current_step_code
+      }${devices.length ? ` · ${devices.join("、")}` : " · 尚未绑定设备"}`;
       text.append(batch, meta);
       const status = document.createElement("span");
       status.className = `status ${item.status}`;
@@ -801,17 +818,54 @@ async function createExperiment(event) {
 }
 
 async function loadDetail() {
+  if (detailLoading) return;
+  detailLoading = true;
   try {
-    const [detail, traceability] = await Promise.all([
+    const [detail, traceability, revision] = await Promise.all([
       api(`/api/experiments/${experimentId}`),
-      api(`/api/experiments/${experimentId}/traceability`)
+      api(`/api/experiments/${experimentId}/traceability`),
+      api(`/api/experiments/${experimentId}/revision`)
     ]);
     state = detail;
     state.traceability = traceability;
+    revisionToken = revision.revision;
     renderDetail();
     connectLive();
   } catch (error) {
     toast(error.message, true);
+  } finally {
+    detailLoading = false;
+  }
+}
+
+async function handleScannedCode(code) {
+  const result = await api(
+    `/api/scan/resolve?code=${encodeURIComponent(code)}`
+  );
+  if (result.kind === "trace_item") {
+    const item = result.item;
+    if (experimentId === item.experiment_id) {
+      toast(`已识别：${item.display_name}`);
+      return;
+    }
+    location.href = `/experiments/${item.experiment_id}?scan=${encodeURIComponent(code)}`;
+    return;
+  }
+  if (result.kind === "storage_location") {
+    const locationCode = result.location.location_code;
+    for (const id of ["traceLocationCode","traceStoreLocationCode"]) {
+      const input = byId(id);
+      if (input) input.value = locationCode;
+    }
+    toast(`已识别位置：${result.location.display_name}`);
+    return;
+  }
+  if (result.kind === "material_container") {
+    window.dispatchEvent(new CustomEvent(
+      "puricore:material-scanned",
+      {detail:result.material}
+    ));
+    toast(`已识别原材料：${result.material.material_name}`);
   }
 }
 
@@ -1493,13 +1547,20 @@ function selectedDeviceForType(type) {
   if (selectedId != null) {
     return candidates.find(item => Number(item.id) === Number(selectedId)) || null;
   }
-  return candidates.length === 1 ? candidates[0] : null;
+  if (candidates.length !== 1) return null;
+  const only = candidates[0];
+  const occupiedByOther = (
+    only.reservation
+    && Number(only.reservation.experiment_id)
+      !== Number(state.experiment.id)
+  );
+  return occupiedByOther ? null : only;
 }
 
 function missingDeviceBindings(step) {
   return (STEP_DEVICE_TYPES[step] || []).filter(type => {
     const candidates = devicesOfType(type);
-    return candidates.length > 1 && !selectedDeviceForType(type);
+    return candidates.length > 0 && !selectedDeviceForType(type);
   });
 }
 
@@ -1530,7 +1591,15 @@ function renderDevicePicker(parent, type, candidates, selectedDevice) {
     .forEach(device => {
       const option = document.createElement("option");
       option.value = String(device.id);
-      option.textContent = `${device.alias || device.name} · ${deviceReadingIsFresh(device) ? "在线" : "离线"}`;
+      const occupiedByOther = (
+        device.reservation
+        && Number(device.reservation.experiment_id)
+          !== Number(state.experiment.id)
+      );
+      option.textContent = occupiedByOther
+        ? `${device.alias || device.name} · 已用于 ${device.reservation.batch_id}`
+        : `${device.alias || device.name} · ${deviceReadingIsFresh(device) ? "在线" : "离线"}`;
+      option.disabled = occupiedByOther;
       option.selected = Number(device.id) === Number(
         pendingDeviceSelections.get(type) ?? selectedDevice?.id
       );
@@ -1855,6 +1924,57 @@ function materialTarget(name) {
   }) || null;
 }
 
+function applyMaterialToRow(row, material) {
+  if (
+    material.material_name.trim().toUpperCase()
+    !== row.dataset.materialName.trim().toUpperCase()
+  ) {
+    throw new Error(
+      `当前需要 ${row.dataset.materialName}，扫描到的是 ${material.material_name}`
+    );
+  }
+  if (material.status !== "available") {
+    throw new Error(`该原材料当前状态为 ${material.status}，不能领用`);
+  }
+  if (
+    material.unit
+    && row.dataset.materialUnit
+    && material.unit !== row.dataset.materialUnit
+  ) {
+    throw new Error(
+      `该容器单位为 ${material.unit}，当前配方单位为 ${row.dataset.materialUnit}`
+    );
+  }
+  row.dataset.materialContainerId = String(material.id);
+  row.dataset.containerCode = material.container_code;
+  row.dataset.expiresAt = material.expires_on || "";
+  const lotInput = row.querySelector("[data-material-lot]");
+  lotInput.value = (
+    material.supplier_lot
+    || material.internal_lot
+    || material.container_code
+  );
+  const badge = row.querySelector("[data-material-scan-status]");
+  badge.textContent = `${material.container_code} · 余量 ${
+    material.quantity_remaining ?? "未知"
+  } ${material.unit || ""}`;
+  badge.style.color = "var(--ok)";
+}
+
+async function scanMaterialIntoRow(row) {
+  await PuricoreScanner.open({
+    onResult:async code => {
+      const result = await api(
+        `/api/scan/resolve?code=${encodeURIComponent(code)}`
+      );
+      if (result.kind !== "material_container") {
+        throw new Error("扫描到的不是原材料容器标签");
+      }
+      applyMaterialToRow(row, result.material);
+    }
+  });
+}
+
 function renderMaterialStep(form) {
   const intro = document.createElement("p");
   intro.className = "field full material-note";
@@ -1880,6 +2000,17 @@ function renderMaterialStep(form) {
       ? `单位 ${unit}`
       : `配方量 ${target.target_value} ${unit}`;
     identity.append(title, theory);
+    const scan = document.createElement("button");
+    scan.type = "button";
+    scan.className = "ghost";
+    scan.textContent = "扫描瓶身";
+    scan.onclick = () => scanMaterialIntoRow(row).catch(error =>
+      toast(error.message, true)
+    );
+    const scanStatus = document.createElement("small");
+    scanStatus.dataset.materialScanStatus = "true";
+    scanStatus.textContent = "尚未扫描，可人工补录";
+    identity.append(scan, scanStatus);
 
     const actualWrap = document.createElement("div");
     actualWrap.className = "field";
@@ -1902,6 +2033,7 @@ function renderMaterialStep(form) {
     const lot = document.createElement("input");
     lot.type = "text";
     lot.name = `material_lot_${index}`;
+    lot.dataset.materialLot = "true";
     lot.placeholder = "可稍后补录";
     lotWrap.append(lotLabel, lot);
     row.append(identity, actualWrap, lotWrap);
@@ -1946,7 +2078,12 @@ function collectStepResult(form, step) {
         lot:form.elements[`material_lot_${index}`].value.trim(),
         theoretical:Number.isFinite(theoretical) && row.dataset.theoretical !== "" ? theoretical : null,
         actual,
-        unit:row.dataset.materialUnit
+        unit:row.dataset.materialUnit,
+        material_container_id:row.dataset.materialContainerId
+          ? Number(row.dataset.materialContainerId)
+          : null,
+        container_code:row.dataset.containerCode || null,
+        expires_at:row.dataset.expiresAt || null
       });
     });
     return {materials};
@@ -2483,6 +2620,31 @@ async function reviewExperiment(action) {
   } catch (error) { toast(error.message, true); }
 }
 
+function appendLiveTemperature(processStatus) {
+  const source = processStatus?.reaction_temp;
+  const snapshot = source?.latest;
+  const metricKey = source?.binding?.metric_key;
+  if (!snapshot || !metricKey || !snapshot.ts_ms) return;
+  const value = metricKey === "temp_c"
+    ? snapshot.temp_c
+    : snapshot.metrics?.[metricKey];
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return;
+  const series = state.temperature_series || [];
+  const last = series[series.length - 1];
+  if (last?.ts_ms === snapshot.ts_ms) return;
+  series.push({
+    binding_id:source.binding.id,
+    device_id:source.device?.id,
+    sample_id:null,
+    ts_ms:snapshot.ts_ms,
+    metric_key:metricKey,
+    channel_selector:source.binding.channel_selector,
+    value:numeric
+  });
+  state.temperature_series = series.slice(-7200);
+}
+
 async function connectLive() {
   if (!experimentId || liveConnecting) return;
   liveConnecting = true;
@@ -2493,27 +2655,41 @@ async function connectLive() {
     });
   } catch (_) {}
   const source = new EventSource(`/api/experiments/${experimentId}/stream`);
-  source.addEventListener("snapshot", event => {
+  source.addEventListener("snapshot", async event => {
     const data = JSON.parse(event.data);
     byId("liveState").textContent = `实时 · ${new Date().toLocaleTimeString("zh-CN",{hour12:false})}`;
     if (data.available_devices) {
       state.available_devices = data.available_devices;
       renderDevices(data.available_devices);
     }
-    state.process_status = data.process_status;
-    state.temperature_series = data.temperature_series;
-    state.temperature_checkpoints = data.temperature_checkpoints;
-    state.reached_temperature = data.reached_temperature;
-    state.telemetry_gaps = data.telemetry_gaps;
-    state.telemetry_integrity_status = data.telemetry_integrity_status;
+    if (
+      (
+        data.revision
+        && revisionToken
+        && data.revision !== revisionToken
+      )
+      || (
+        data.experiment
+        && state.experiment
+        && data.experiment.row_version !== state.experiment.row_version
+      )
+    ) {
+      source.close();
+      liveConnecting = false;
+      await loadDetail();
+      return;
+    }
+    if (data.process_status) {
+      state.process_status = data.process_status;
+      appendLiveTemperature(data.process_status);
+    }
+    if (data.telemetry_integrity_status) {
+      state.telemetry_integrity_status = data.telemetry_integrity_status;
+    }
     renderCurrentStep();
-    source.close();
-    liveConnecting = false;
   });
   source.onerror = () => {
     byId("liveState").textContent = "实时连接重试中";
-    source.close();
-    liveConnecting = false;
   };
 }
 
@@ -2522,10 +2698,40 @@ async function init() {
   const sessionState = await loadSession();
   if (sessionState === false) return;
   updateOutboxStatus();
+  byId("cameraScanButton")?.addEventListener("click", () => {
+    PuricoreScanner.open({onResult:handleScannedCode}).catch(error =>
+      toast(error.message, true)
+    );
+  });
+  byId("cameraScanClose")?.addEventListener("click", async () => {
+    await PuricoreScanner.stop();
+    byId("cameraScanDialog").close();
+  });
+  byId("cameraScanManualSubmit")?.addEventListener(
+    "click",
+    () => PuricoreScanner.submitManual()
+  );
   if (byId("outboxStatus")) {
     byId("outboxStatus").addEventListener("click", resolveOutboxConflicts);
   }
   window.addEventListener("online", flushOutbox);
+  window.addEventListener("puricore:material-scanned", event => {
+    const material = event.detail;
+    const row = [...document.querySelectorAll("[data-material-name]")]
+      .find(candidate =>
+        candidate.dataset.materialName.trim().toUpperCase()
+        === material.material_name.trim().toUpperCase()
+      );
+    if (!row) {
+      toast("当前步骤没有需要这种原材料，或物料步骤尚未打开。", true);
+      return;
+    }
+    try {
+      applyMaterialToRow(row, material);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
   await flushOutbox();
   if (experimentId) {
     byId("listView").classList.add("hidden");
@@ -2575,7 +2781,7 @@ async function init() {
       });
     });
     await loadDetail();
-    setInterval(connectLive, 3000);
+    connectLive();
   } else {
     byId("createForm").addEventListener("submit", createExperiment);
     byId("refreshList").addEventListener("click", loadList);

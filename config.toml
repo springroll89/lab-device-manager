@@ -1,6 +1,11 @@
 db_path            = "./data/lab_device_manager.db"
 sample_interval_ms = 1000
 web_port           = 7800
+web_host           = "0.0.0.0"
+# 推荐配置为固定、受信任的 HTTPS 地址，用于标签二维码和移动端摄像头。
+public_base_url     = ""
+tls_certfile       = ""
+tls_keyfile        = ""
 auto_open_browser  = true
 # secret_key is auto-generated in data/.session_secret if omitted.
 

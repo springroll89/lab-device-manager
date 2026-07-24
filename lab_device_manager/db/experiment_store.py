@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager, nullcontext
+from datetime import date, datetime
 from typing import Iterator, Optional
 
 
@@ -195,6 +197,331 @@ class ExperimentStore:
                 (limit,),
             ).fetchall()
         return [self._experiment(row) for row in rows]
+
+    def experiment_revision(self, experiment_id: int) -> dict:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT e.row_version, e.updated_at_ms,
+                     COALESCE((SELECT MAX(id) FROM experiment_event
+                               WHERE experiment_id=e.id), 0) AS event_id,
+                     COALESCE((SELECT MAX(id) FROM measurement
+                               WHERE experiment_id=e.id), 0) AS measurement_id,
+                     COALESCE((SELECT MAX(id) FROM trace_event
+                               WHERE experiment_id=e.id), 0) AS trace_event_id,
+                     COALESCE((SELECT MAX(id) FROM deviation
+                               WHERE experiment_id=e.id), 0) AS deviation_id
+                   FROM experiment e WHERE e.id=?""",
+                (experiment_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("experiment not found")
+        result = dict(row)
+        result["revision"] = ":".join(
+            str(result[key])
+            for key in (
+                "row_version",
+                "updated_at_ms",
+                "event_id",
+                "measurement_id",
+                "trace_event_id",
+                "deviation_id",
+            )
+        )
+        return result
+
+    def reserve_process_device(
+        self,
+        experiment_id: int,
+        device_id: int,
+        device_type: str,
+        actor: str,
+        actor_user_id: Optional[int],
+        reserved_at_ms: int,
+    ) -> dict:
+        with self.transaction() as conn:
+            same = conn.execute(
+                """SELECT * FROM device_reservation
+                   WHERE experiment_id=? AND device_id=?
+                     AND purpose='process' AND status='active'""",
+                (experiment_id, device_id),
+            ).fetchone()
+            if same is not None:
+                return dict(same)
+            conflict = conn.execute(
+                """SELECT r.*, e.batch_id
+                   FROM device_reservation r
+                   JOIN experiment e ON e.id=r.experiment_id
+                   WHERE r.device_id=? AND r.status='active'""",
+                (device_id,),
+            ).fetchone()
+            if conflict is not None:
+                raise RuntimeError(
+                    f"设备正在被批次 {conflict['batch_id']} 使用"
+                )
+            conn.execute(
+                """UPDATE device_reservation
+                   SET status='released', released_at_ms=?
+                   WHERE experiment_id=? AND device_type=?
+                     AND purpose='process' AND status='active'""",
+                (reserved_at_ms, experiment_id, device_type),
+            )
+            cursor = conn.execute(
+                """INSERT INTO device_reservation(
+                     experiment_id, device_id, device_type, purpose, status,
+                     reserved_at_ms, reserved_by, reserved_by_user_id)
+                   VALUES(?,?,?,'process','active',?,?,?)""",
+                (
+                    experiment_id,
+                    device_id,
+                    device_type,
+                    reserved_at_ms,
+                    actor,
+                    actor_user_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM device_reservation WHERE id=?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        return dict(row)
+
+    def claim_measurement_device(
+        self,
+        experiment_id: int,
+        device_id: int,
+        actor: str,
+        actor_user_id: Optional[int],
+        now_ms: int,
+        lease_ms: int = 300_000,
+    ) -> dict:
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE device_reservation
+                   SET status='expired', released_at_ms=?
+                   WHERE purpose='measurement' AND status='active'
+                     AND expires_at_ms IS NOT NULL AND expires_at_ms<=?""",
+                (now_ms, now_ms),
+            )
+            same = conn.execute(
+                """SELECT * FROM device_reservation
+                   WHERE experiment_id=? AND device_id=?
+                     AND purpose='measurement' AND status='active'""",
+                (experiment_id, device_id),
+            ).fetchone()
+            if same is not None:
+                conn.execute(
+                    """UPDATE device_reservation SET expires_at_ms=?
+                       WHERE id=?""",
+                    (now_ms + lease_ms, same["id"]),
+                )
+                row = conn.execute(
+                    "SELECT * FROM device_reservation WHERE id=?",
+                    (same["id"],),
+                ).fetchone()
+                return dict(row)
+            conflict = conn.execute(
+                """SELECT r.*, e.batch_id
+                   FROM device_reservation r
+                   JOIN experiment e ON e.id=r.experiment_id
+                   WHERE r.device_id=? AND r.status='active'""",
+                (device_id,),
+            ).fetchone()
+            if conflict is not None:
+                raise RuntimeError(
+                    f"粘度计当前由批次 {conflict['batch_id']} 使用"
+                )
+            cursor = conn.execute(
+                """INSERT INTO device_reservation(
+                     experiment_id, device_id, device_type, purpose, status,
+                     reserved_at_ms, expires_at_ms, reserved_by,
+                     reserved_by_user_id)
+                   VALUES(?,?,'viscometer','measurement','active',?,?,?,?)""",
+                (
+                    experiment_id,
+                    device_id,
+                    now_ms,
+                    now_ms + lease_ms,
+                    actor,
+                    actor_user_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM device_reservation WHERE id=?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        return dict(row)
+
+    def release_measurement_device(
+        self, experiment_id: int, device_id: int, released_at_ms: int
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE device_reservation
+                   SET status='released', released_at_ms=?
+                   WHERE experiment_id=? AND device_id=?
+                     AND purpose='measurement' AND status='active'""",
+                (released_at_ms, experiment_id, device_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
+    def release_experiment_devices(
+        self, experiment_id: int, released_at_ms: int
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE device_reservation
+                   SET status='released', released_at_ms=?
+                   WHERE experiment_id=? AND status='active'""",
+                (released_at_ms, experiment_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
+    def list_device_reservations(
+        self,
+        experiment_id: Optional[int] = None,
+        now_ms: Optional[int] = None,
+    ) -> list[dict]:
+        where = "WHERE r.status='active'"
+        params: list = []
+        if experiment_id is not None:
+            where += " AND r.experiment_id=?"
+            params.append(experiment_id)
+        with self._lock:
+            current_ms = (
+                int(time.time() * 1000) if now_ms is None else now_ms
+            )
+            self._conn.execute(
+                """UPDATE device_reservation
+                   SET status='expired', released_at_ms=?
+                   WHERE purpose='measurement' AND status='active'
+                     AND expires_at_ms IS NOT NULL AND expires_at_ms<=?""",
+                (current_ms, current_ms),
+            )
+            self._conn.commit()
+            rows = self._conn.execute(
+                f"""SELECT r.*, e.batch_id, d.name AS device_name,
+                           d.alias AS device_alias
+                    FROM device_reservation r
+                    JOIN experiment e ON e.id=r.experiment_id
+                    JOIN device d ON d.id=r.device_id
+                    {where}
+                    ORDER BY r.reserved_at_ms, r.id""",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_material_container(self, data: dict) -> dict:
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """INSERT INTO material_container(
+                     container_code, external_barcode, material_name,
+                     supplier, supplier_lot, internal_lot, expires_on,
+                     opened_on, status, quantity_remaining, unit,
+                     created_at_ms, updated_at_ms, created_by,
+                     created_by_user_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    data["container_code"],
+                    data.get("external_barcode"),
+                    data["material_name"],
+                    data.get("supplier"),
+                    data.get("supplier_lot"),
+                    data.get("internal_lot"),
+                    data.get("expires_on"),
+                    data.get("opened_on"),
+                    data.get("status", "available"),
+                    data.get("quantity_remaining"),
+                    data.get("unit"),
+                    data["created_at_ms"],
+                    data["created_at_ms"],
+                    data["created_by"],
+                    data.get("created_by_user_id"),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO material_container_event(
+                     client_event_id, material_container_id, event_type,
+                     effective_at_ms, actor, actor_user_id, payload_json)
+                   VALUES(?,?,'registered',?,?,?,?)""",
+                (
+                    data["client_event_id"],
+                    cursor.lastrowid,
+                    data["created_at_ms"],
+                    data["created_by"],
+                    data.get("created_by_user_id"),
+                    _json({"container_code": data["container_code"]}),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM material_container WHERE id=?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        return dict(row)
+
+    def get_material_container_by_code(
+        self, code: str
+    ) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM material_container
+                   WHERE container_code=? OR external_barcode=?""",
+                (code, code),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_material_container_by_id(
+        self, material_container_id: int
+    ) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM material_container WHERE id=?",
+                (material_container_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_material_containers(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM material_container
+                   ORDER BY material_name, created_at_ms DESC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def expire_material_containers(
+        self, today_text: str, updated_at_ms: int
+    ) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                """UPDATE material_container
+                   SET status='expired', updated_at_ms=?
+                   WHERE status='available'
+                     AND expires_on IS NOT NULL
+                     AND expires_on!=''
+                     AND expires_on<?""",
+                (updated_at_ms, today_text),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
+    def list_material_container_events(
+        self, material_container_id: int
+    ) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT event.*, experiment.batch_id
+                   FROM material_container_event event
+                   LEFT JOIN experiment
+                     ON experiment.id=event.experiment_id
+                   WHERE event.material_container_id=?
+                   ORDER BY event.id""",
+                (material_container_id,),
+            ).fetchall()
+        return [
+            _decode_row(row, {"payload_json": "payload"})
+            for row in rows
+        ]
 
     def max_numeric_batch_sequence(self, prefix: str) -> int:
         suffix_start = len(prefix) + 1
@@ -426,13 +753,62 @@ class ExperimentStore:
                     step_row["id"],
                     connection=conn,
                 )
-            for material in materials or []:
+            for material_index, material in enumerate(
+                materials or [], start=1
+            ):
+                container = None
+                container_id = material.get("material_container_id")
+                if container_id is not None:
+                    container = conn.execute(
+                        "SELECT * FROM material_container WHERE id=?",
+                        (container_id,),
+                    ).fetchone()
+                    if container is None:
+                        raise RuntimeError("原材料容器不存在")
+                    if container["status"] != "available":
+                        raise RuntimeError(
+                            f"原材料容器 {container['container_code']} 当前不可用"
+                        )
+                    if (
+                        container["expires_on"]
+                        and container["expires_on"] < date.today().isoformat()
+                    ):
+                        raise RuntimeError(
+                            f"原材料容器 {container['container_code']} 已过有效期"
+                        )
+                    if (
+                        material.get("container_code")
+                        and material["container_code"]
+                        != container["container_code"]
+                    ):
+                        raise RuntimeError("原材料容器编号与扫码记录不一致")
+                    if (
+                        str(material["material_name"]).strip().upper()
+                        != str(container["material_name"]).strip().upper()
+                    ):
+                        raise RuntimeError(
+                            "原材料名称与扫码容器登记信息不一致"
+                        )
+                    if (
+                        container["unit"]
+                        and container["unit"] != material["unit"]
+                    ):
+                        raise RuntimeError("原材料容器单位与本次用量单位不一致")
+                    remaining = container["quantity_remaining"]
+                    if (
+                        remaining is not None
+                        and remaining < material["actual_value"]
+                    ):
+                        raise RuntimeError(
+                            f"原材料容器 {container['container_code']} 余量不足"
+                        )
                 conn.execute(
                     """INSERT INTO material_usage(
                          experiment_id, step_instance_id, material_name, lot_no,
                          expires_at, opened_at, theoretical_value, actual_value,
-                         unit, appearance, added_at_ms, operator, reviewer)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         unit, appearance, added_at_ms, operator, reviewer,
+                         material_container_id, container_code)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         experiment_id,
                         step_row["id"],
@@ -447,6 +823,115 @@ class ExperimentStore:
                         material.get("added_at_ms", effective_at_ms),
                         material.get("operator", actor),
                         material.get("reviewer"),
+                        container_id,
+                        material.get("container_code"),
+                    ),
+                )
+                if container is not None:
+                    if not container["opened_on"]:
+                        opened_on = datetime.fromtimestamp(
+                            effective_at_ms / 1000
+                        ).date().isoformat()
+                        conn.execute(
+                            """UPDATE material_container
+                               SET opened_on=?, updated_at_ms=?
+                               WHERE id=?""",
+                            (
+                                opened_on,
+                                effective_at_ms,
+                                container_id,
+                            ),
+                        )
+                        conn.execute(
+                            """INSERT INTO material_container_event(
+                                 client_event_id, material_container_id,
+                                 experiment_id, event_type,
+                                 effective_at_ms, actor, actor_user_id,
+                                 payload_json)
+                               VALUES(?,?,?,'opened',?,?,?,?)""",
+                            (
+                                f"{event['client_event_id']}:open:{material_index}",
+                                container_id,
+                                experiment_id,
+                                effective_at_ms,
+                                actor,
+                                event.get("actor_user_id"),
+                                _json({"step_code": step_code}),
+                            ),
+                        )
+                    new_remaining = (
+                        container["quantity_remaining"]
+                        - material["actual_value"]
+                        if container["quantity_remaining"] is not None
+                        else None
+                    )
+                    conn.execute(
+                        """UPDATE material_container
+                           SET quantity_remaining=?,
+                               status=CASE
+                                 WHEN ? IS NOT NULL AND ? <= 0
+                                 THEN 'empty' ELSE status END,
+                               updated_at_ms=?
+                           WHERE id=?""",
+                        (
+                            new_remaining,
+                            new_remaining,
+                            new_remaining,
+                            effective_at_ms,
+                            container_id,
+                        ),
+                    )
+                    conn.execute(
+                        """INSERT INTO material_container_event(
+                             client_event_id, material_container_id,
+                             experiment_id, event_type, quantity, unit,
+                             effective_at_ms, actor, actor_user_id,
+                             payload_json)
+                           VALUES(?,?,?,'used',?,?,?,?,?,?)""",
+                        (
+                            f"{event['client_event_id']}:material:{material_index}",
+                            container_id,
+                            experiment_id,
+                            material["actual_value"],
+                            material["unit"],
+                            effective_at_ms,
+                            actor,
+                            event.get("actor_user_id"),
+                            _json({"step_code": step_code}),
+                        ),
+                    )
+            release_type = {
+                "R201-31": "tyd02",
+                "R201-60": "stirrer",
+            }.get(step_code)
+            if release_type:
+                release_roles = (
+                    ("acid_pump",)
+                    if release_type == "tyd02"
+                    else ("stirrer", "reaction_temp")
+                )
+                placeholders = ",".join("?" for _ in release_roles)
+                conn.execute(
+                    f"""UPDATE experiment_data_source_binding
+                        SET unlinked_at_ms=?
+                        WHERE experiment_id=?
+                          AND device_role IN ({placeholders})
+                          AND unlinked_at_ms IS NULL""",
+                    (
+                        effective_at_ms,
+                        experiment_id,
+                        *release_roles,
+                    ),
+                )
+                conn.execute(
+                    """UPDATE device_reservation
+                       SET status='released', released_at_ms=?
+                       WHERE experiment_id=? AND device_type=?
+                         AND purpose='process' AND status='active'""",
+                    (
+                        event["received_at_server_ms"],
+                        experiment_id,
+                        release_type,
                     ),
                 )
             exp_row = conn.execute(
@@ -1402,6 +1887,16 @@ class ExperimentStore:
                 )
                 if cursor.rowcount != 1:
                     raise RuntimeError("row version conflict")
+                if experiment_updates.get("status") in (
+                    "released",
+                    "terminated",
+                ):
+                    conn.execute(
+                        """UPDATE device_reservation
+                           SET status='released', released_at_ms=?
+                           WHERE experiment_id=? AND status='active'""",
+                        (event["received_at_server_ms"], experiment_id),
+                    )
             conn.execute(
                 """UPDATE deviation SET status='closed', cause=?,
                      impact_assessment=?, capa=?, disposition=?,
@@ -1491,6 +1986,23 @@ class ExperimentStore:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("row version conflict")
+            if updates.get("status") in (
+                "pending_review",
+                "released",
+                "terminated",
+            ):
+                conn.execute(
+                    """UPDATE experiment_data_source_binding
+                       SET unlinked_at_ms=?
+                       WHERE experiment_id=? AND unlinked_at_ms IS NULL""",
+                    (event["effective_at_ms"], experiment_id),
+                )
+                conn.execute(
+                    """UPDATE device_reservation
+                       SET status='released', released_at_ms=?
+                       WHERE experiment_id=? AND status='active'""",
+                    (event["received_at_server_ms"], experiment_id),
+                )
             self.add_experiment_event(
                 experiment_id, event, connection=conn
             )

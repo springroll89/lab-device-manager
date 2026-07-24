@@ -7,7 +7,7 @@ import re
 import sqlite3
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable, Optional
 
 
@@ -241,6 +241,124 @@ class R201Service:
     def list_experiments(self) -> list[dict]:
         return self.store.list_experiments()
 
+    def experiment_revision(self, experiment_id: int) -> dict:
+        try:
+            return self.store.experiment_revision(experiment_id)
+        except LookupError as exc:
+            raise R201Error(str(exc), 404) from exc
+
+    def create_material_container(self, data: dict) -> dict:
+        self._require_fields(
+            data,
+            (
+                "container_code",
+                "material_name",
+                "created_by",
+                "client_event_id",
+            ),
+        )
+        container_code = str(data["container_code"]).strip().upper()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9_.-]{2,63}", container_code):
+            raise R201Error("container_code format is invalid")
+        quantity = data.get("quantity_remaining")
+        if quantity not in (None, ""):
+            quantity = self._number(quantity, "quantity_remaining")
+            if quantity < 0:
+                raise R201Error("quantity_remaining cannot be negative")
+            if not str(data.get("unit") or "").strip():
+                raise R201Error("有余量时必须填写单位")
+        material_name = str(data["material_name"]).strip()
+        if not material_name:
+            raise R201Error("material_name is required")
+        expires_on = str(data.get("expires_on") or "").strip() or None
+        if expires_on:
+            try:
+                expiry_date = datetime.strptime(
+                    expires_on, "%Y-%m-%d"
+                ).date()
+            except ValueError as exc:
+                raise R201Error("有效期必须使用 YYYY-MM-DD 格式") from exc
+            if expiry_date < date.today():
+                raise R201Error("原材料有效期已过，不能登记为可用容器")
+        payload = {
+            **data,
+            "container_code": container_code,
+            "external_barcode": (
+                str(data.get("external_barcode") or "").strip().upper()
+                or None
+            ),
+            "material_name": material_name,
+            "expires_on": expires_on,
+            "quantity_remaining": quantity,
+            "unit": str(data.get("unit") or "").strip() or None,
+            "status": "available",
+            "created_at_ms": self.clock_ms(),
+        }
+        try:
+            return self.store.create_material_container(payload)
+        except sqlite3.IntegrityError as exc:
+            raise R201Error(
+                "原材料容器编号或供应商条码已存在", 409
+            ) from exc
+
+    def list_material_containers(self) -> list[dict]:
+        self.store.expire_material_containers(
+            date.today().isoformat(), self.clock_ms()
+        )
+        return self.store.list_material_containers()
+
+    def resolve_scan_code(self, code: str) -> dict:
+        normalized = str(code or "").strip()
+        if "/scan/" in normalized:
+            normalized = normalized.rsplit("/scan/", 1)[1]
+        normalized = normalized.removeprefix("PURICORE:")
+        self.store.expire_material_containers(
+            date.today().isoformat(), self.clock_ms()
+        )
+        material = self.store.get_material_container_by_code(
+            normalized.upper()
+        )
+        if material is not None:
+            return {"kind": "material_container", "material": material}
+        return self.lookup_trace_code(normalized)
+
+    def claim_viscometer(
+        self, experiment_id: int, device_id: int, data: dict
+    ) -> dict:
+        experiment = self._get(experiment_id)
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
+        active = self.store.get_active_step(experiment_id)
+        if (
+            experiment["current_step_code"] != "R201-50"
+            or active is None
+            or active["step_code"] != "R201-50"
+        ):
+            raise R201Error("当前批次尚未进入粘度测量阶段", 409)
+        try:
+            return self.store.claim_measurement_device(
+                experiment_id,
+                device_id,
+                str(data["actor"]),
+                data.get("actor_user_id"),
+                self.clock_ms(),
+            )
+        except RuntimeError as exc:
+            raise R201Error(str(exc), 409) from exc
+
+    def release_viscometer(
+        self, experiment_id: int, device_id: int, data: dict
+    ) -> dict:
+        experiment = self._get(experiment_id)
+        self._require_operator(
+            experiment, data.get("actor"), data.get("actor_user_id")
+        )
+        released = self.store.release_measurement_device(
+            experiment_id, device_id, self.clock_ms()
+        )
+        return {"released": bool(released)}
+
     def suggest_batch_id(self, membrane_system: str, date_text: str) -> str:
         system = str(membrane_system).upper().strip()
         if system not in ("CEM", "AEM"):
@@ -271,6 +389,9 @@ class R201Service:
             "recipe_parameters": self.store.list_recipe_parameters(experiment_id),
             "data_sources": self.store.list_data_source_bindings(experiment_id),
             "deviations": self.store.list_deviations(experiment_id),
+            "device_reservations": self.store.list_device_reservations(
+                experiment_id
+            ),
             "endpoint_ready": self._endpoint_ready(
                 experiment, measurements, steps
             ),
@@ -1277,6 +1398,19 @@ class R201Service:
         selected_at_ms = int(
             data.get("selected_at_ms") or self.clock_ms()
         )
+        reservation = None
+        if device_type != "viscometer":
+            try:
+                reservation = self.store.reserve_process_device(
+                    experiment_id,
+                    int(data["device_id"]),
+                    device_type,
+                    str(data["actor"]),
+                    data.get("actor_user_id"),
+                    selected_at_ms,
+                )
+            except RuntimeError as exc:
+                raise R201Error(str(exc), 409) from exc
         active = self.store.get_active_step(experiment_id)
         event = self._event(
             data,
@@ -1301,7 +1435,11 @@ class R201Service:
             )
         except sqlite3.IntegrityError as exc:
             raise R201Error("invalid process device", 400) from exc
-        return {"bindings": bindings, "event": event}
+        return {
+            "bindings": bindings,
+            "event": event,
+            "reservation": reservation,
+        }
 
     def open_deviation(self, experiment_id: int, data: dict) -> dict:
         experiment = self._get(experiment_id)
@@ -2372,6 +2510,13 @@ class R201Service:
                     "added_at_ms": material.get("added_at_ms", added_at_ms),
                     "operator": operator,
                     "reviewer": material.get("reviewer"),
+                    "material_container_id": material.get(
+                        "material_container_id"
+                    ),
+                    "container_code": (
+                        str(material.get("container_code") or "").strip()
+                        or None
+                    ),
                 }
             )
         return normalized
