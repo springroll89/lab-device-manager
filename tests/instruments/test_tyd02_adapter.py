@@ -115,6 +115,47 @@ def test_read_status_decodes_fields():
     assert s.alarm is False
 
 
+def test_read_status_rejects_nonfinite_and_out_of_protocol_values():
+    inp, hold = _adapter_inputs()
+    inp[(1000, 1)] = s16(101)
+    inp[(1002, 2)] = f32(float("inf"))
+    inp[(1008, 2)] = u32(100)
+    inp[(1032, 11)] = (
+        f32(float("nan"))
+        + u16(2)
+        + f32(-1.0)
+        + u16(2)
+        + f32(float("inf"))
+        + u16(2)
+        + f32(30.0)
+    )
+    inp[(1043, 4)] = u32(200) + u32(0)
+    hold[(4088, 2)] = f32(41.0)
+    hold[(4090, 2)] = f32(201.0)
+    hold[(4128, 6)] = (
+        f32(float("nan"))
+        + f32(-1.0)
+        + u16(0)
+        + u16(0)
+    )
+
+    status = TYD02Adapter(
+        FakeClient(inp, hold), slave=1, wordorder="CDAB"
+    ).read_status()
+
+    assert status.temp_c is None
+    assert status.flow_rpm is None
+    assert status.progress_pct is None
+    assert status.acc_volume is None
+    assert status.consumed_volume is None
+    assert status.remaining_volume is None
+    assert status.metrics["target_volume"] is None
+    assert status.metrics["inject_rate"] is None
+    assert status.metrics["syringe_inner_diameter_mm"] is None
+    assert status.metrics["syringe_capacity"] is None
+    assert status.metrics["step_length_ul_per_step"] is None
+
+
 def test_derive_state_alarm_wins():
     assert derive_state(1, 1, 1, 1) == "alarm"
     assert derive_state(0, 1, 0, 0) == "paused"

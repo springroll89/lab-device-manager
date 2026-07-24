@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 import struct
 import time
 from lab_device_manager.instruments.base import StatusSnapshot
@@ -19,6 +20,24 @@ SYRINGE_NAMES = {
 SYRINGE_INNER_DIAMETERS = {
     9: 26.7,
 }
+
+
+def _bounded_float(
+    value,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return number
 
 
 def _ul_per_step(target_volume: float, target_unit: str, steps: int) -> Optional[float]:
@@ -132,6 +151,8 @@ def _read_mode_setpoints(client, mode, wo):
             exc,
         )
         result["_read_error"] = str(exc)
+    for key in ("target_volume", "inject_rate", "extract_rate"):
+        result[key] = _bounded_float(result[key], minimum=0)
     return result
 
 
@@ -178,8 +199,16 @@ class TYD02Adapter:
     def read_status(self) -> StatusSnapshot:
         c = self.client
         wo = self.wordorder
-        temp = decode_int16(c.read_input_registers(self.REG_TEMP, 1))
-        inject_rpm = decode_float(c.read_input_registers(self.REG_INJECT_RPM, 2), wo)
+        temp = _bounded_float(
+            decode_int16(c.read_input_registers(self.REG_TEMP, 1)),
+            minimum=-100,
+            maximum=100,
+        )
+        inject_rpm = _bounded_float(
+            decode_float(c.read_input_registers(self.REG_INJECT_RPM, 2), wo),
+            minimum=0,
+            maximum=150,
+        )
         steps = c.read_input_registers(self.REG_CUR_STEPS, 4)
         cur_steps = decode_uint32(steps[0:4], wo)
         req_steps = decode_uint32(steps[4:8], wo)
@@ -188,11 +217,11 @@ class TYD02Adapter:
         total_time_ms = decode_uint32(total_time_raw, wo)
         cycles = decode_uint16(c.read_input_registers(self.REG_CYCLES, 1))
         vb = c.read_input_registers(self.REG_ACC_VOL, 11)
-        acc = decode_float(vb[0:4], wo)
+        acc = _bounded_float(decode_float(vb[0:4], wo), minimum=0)
         acc_u = VOLUME_UNITS.get(decode_uint16(vb[4:6]), "")
-        con = decode_float(vb[6:10], wo)
+        con = _bounded_float(decode_float(vb[6:10], wo), minimum=0)
         con_u = VOLUME_UNITS.get(decode_uint16(vb[10:12]), "")
-        rem = decode_float(vb[12:16], wo)
+        rem = _bounded_float(decode_float(vb[12:16], wo), minimum=0)
         rem_u = VOLUME_UNITS.get(decode_uint16(vb[16:18]), "")
         tb = c.read_input_registers(self.REG_ELAPSED_MS, 4)
         elapsed = decode_uint32(tb[0:4], wo)
@@ -209,6 +238,7 @@ class TYD02Adapter:
             progress = 100.0 * elapsed / total_time_ms
         elif req_steps:
             progress = 100.0 * cur_steps / req_steps
+        progress = _bounded_float(progress, minimum=0, maximum=100)
         metrics: dict = {}
         # --- rich config (mode structure + process settings + syringe) ---
         ms = _read_mode_setpoints(c, mode, wo)
@@ -220,7 +250,16 @@ class TYD02Adapter:
         syr_cap_raw = c.read_holding_registers(4090, 2)
         syr_unit = decode_uint16(c.read_holding_registers(4092, 1))
         syr_inner_raw = c.read_holding_registers(4088, 2)
-        syr_inner_mm = decode_float(syr_inner_raw, wo)
+        syr_inner_mm = _bounded_float(
+            decode_float(syr_inner_raw, wo),
+            minimum=0.001,
+            maximum=40,
+        )
+        syr_capacity = _bounded_float(
+            decode_float(syr_cap_raw, wo),
+            minimum=0,
+            maximum=200,
+        )
         # Custom inner diameter register is often unconfigured (0.001 mm); fall back
         # to the known-code table so step-length calculation is meaningful.
         effective_inner_mm = syr_inner_mm if syr_inner_mm and syr_inner_mm > 1.0 else SYRINGE_INNER_DIAMETERS.get(syr_code)
@@ -240,7 +279,7 @@ class TYD02Adapter:
         metrics["stall_alarm_enabled"] = bool(decode_uint16(c.read_holding_registers(4087, 1)))
         metrics["syringe_code"] = syr_code
         metrics["syringe_name"] = SYRINGE_NAMES.get(syr_code, f"Code {syr_code}")
-        metrics["syringe_capacity"] = decode_float(syr_cap_raw, wo)
+        metrics["syringe_capacity"] = syr_capacity
         metrics["syringe_unit_code"] = syr_unit
         metrics["syringe_inner_diameter_mm"] = syr_inner_mm
         metrics["step_length_ul_per_step"] = ul_per_step
@@ -262,6 +301,6 @@ class TYD02Adapter:
             remaining_volume=rem, remaining_unit=rem_u,
             elapsed_ms=elapsed, remaining_ms=remaining,
             cycles=cycles, progress_pct=progress,
-            temp_c=float(temp), alarm=bool(alarm),
+            temp_c=temp, alarm=bool(alarm),
             metrics=metrics,
         )
