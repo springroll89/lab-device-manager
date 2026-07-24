@@ -50,6 +50,8 @@ STEP_LABELS = {
     "R201-90": "实验记录已完成",
 }
 
+TRUSTED_EVENT_TIME_SKEW_MS = 30_000
+
 REQUIRED_RESULT_FIELDS = {
     "R201-01": ("environment_temp_c", "environment_humidity_rh", "device_checks"),
     "R201-02": ("glassware_items",),
@@ -247,14 +249,7 @@ class R201Service:
         except ValueError as exc:
             raise R201Error("date must match YYYYMMDD") from exc
         prefix = f"{date_text}-{system}-"
-        sequence = 0
-        for experiment in self.store.list_experiments(limit=1000):
-            batch_id = str(experiment["batch_id"]).upper()
-            if not batch_id.startswith(prefix):
-                continue
-            suffix = batch_id[len(prefix):]
-            if suffix.isdigit():
-                sequence = max(sequence, int(suffix))
+        sequence = self.store.max_numeric_batch_sequence(prefix)
         return f"{prefix}{sequence + 1:02d}"
 
     def get_experiment(self, experiment_id: int) -> dict:
@@ -519,139 +514,157 @@ class R201Service:
         active = self.store.get_active_step(experiment_id)
         events = self.store.list_experiment_events(experiment_id)
         summary = self._telemetry_summary(experiment_id, events)
-        if (
-            active is not None
-            and active["step_code"] in ("R201-40", "R201-50")
-            and summary["telemetry_gaps"]
-        ):
-            self._record_telemetry_gap_deviations(
-                experiment, active, summary["telemetry_gaps"]
-            )
-            events = self.store.list_experiment_events(experiment_id)
-            summary = self._telemetry_summary(experiment_id, events)
-        if active is not None and active["step_code"] == "R201-40":
-            spec = experiment["spec_snapshot"]
-            required = spec.get("reach_temp_consecutive_samples")
-            lower = spec.get("reaction_temp_min_c")
-            upper = spec.get("reaction_temp_max_c")
+        with self.store.transaction() as conn:
             if (
-                required is not None
-                and lower is not None
-                and upper is not None
-                and summary["temperature_series"]
+                active is not None
+                and active["step_code"] in ("R201-40", "R201-50")
+                and summary["telemetry_gaps"]
             ):
-                required_count = int(
-                    self._number(
-                        required, "reach_temp_consecutive_samples"
-                    )
+                self._record_telemetry_gap_deviations(
+                    experiment,
+                    active,
+                    summary["telemetry_gaps"],
+                    connection=conn,
                 )
-                if required_count <= 0:
-                    raise R201Error(
-                        "reach_temp_consecutive_samples must be positive"
+                events = self.store.list_experiment_events(experiment_id)
+                summary = self._telemetry_summary(experiment_id, events)
+            if active is not None and active["step_code"] == "R201-40":
+                spec = experiment["spec_snapshot"]
+                required = spec.get("reach_temp_consecutive_samples")
+                lower = spec.get("reaction_temp_min_c")
+                upper = spec.get("reaction_temp_max_c")
+                if (
+                    required is not None
+                    and lower is not None
+                    and upper is not None
+                    and summary["temperature_series"]
+                ):
+                    required_count = int(
+                        self._number(
+                            required, "reach_temp_consecutive_samples"
+                        )
                     )
-                recent = summary["temperature_series"][-required_count:]
-                ready = len(recent) == required_count and all(
-                    self._number(lower, "reaction_temp_min_c")
-                    <= point["value"]
-                    <= self._number(upper, "reaction_temp_max_c")
-                    for point in recent
+                    if required_count <= 0:
+                        raise R201Error(
+                            "reach_temp_consecutive_samples must be positive"
+                        )
+                    recent = summary["temperature_series"][-required_count:]
+                    ready = len(recent) == required_count and all(
+                        self._number(lower, "reaction_temp_min_c")
+                        <= point["value"]
+                        <= self._number(upper, "reaction_temp_max_c")
+                        for point in recent
+                    )
+                    event_id = (
+                        f"derived-reached-temperature-{experiment_id}-"
+                        f"{active['id']}"
+                    )
+                    if (
+                        ready
+                        and self.store.get_event_by_client_id(
+                            event_id, connection=conn
+                        )
+                        is None
+                    ):
+                        point = recent[-1]
+                        self.store.add_experiment_event(
+                            experiment_id,
+                            {
+                                "client_event_id": event_id,
+                                "event_type": "reached_temperature",
+                                "occurred_at_client_ms": None,
+                                "received_at_server_ms": self.clock_ms(),
+                                "client_clock_offset_ms": None,
+                                "clock_sync_status": "server",
+                                "effective_at_ms": point["ts_ms"],
+                                "actor": "system",
+                                "source_type": "derived",
+                                "payload": {
+                                    "sample_id": point["sample_id"],
+                                    "value": point["value"],
+                                    "metric_key": point["metric_key"],
+                                    "device_id": point["device_id"],
+                                    "range_min_c": float(lower),
+                                    "range_max_c": float(upper),
+                                    "consecutive_samples": required_count,
+                                },
+                            },
+                            active["id"],
+                            connection=conn,
+                        )
+                    return self._telemetry_summary(
+                        experiment_id,
+                        self.store.list_experiment_events(experiment_id),
+                    )
+            if (
+                active is None
+                or active["step_code"] != "R201-50"
+                or not summary["temperature_series"]
+            ):
+                return summary
+            interval_minutes = self._number(
+                experiment["spec_snapshot"].get(
+                    "aging_checkpoint_interval_min", 20
+                ),
+                "aging_checkpoint_interval_min",
+            )
+            if interval_minutes <= 0:
+                raise R201Error(
+                    "aging_checkpoint_interval_min must be positive"
                 )
+            interval_ms = int(interval_minutes * 60_000)
+            start_ms = active["started_effective_at_ms"]
+            latest_ms = summary["temperature_series"][-1]["ts_ms"]
+            checkpoint_count = max(
+                0, (latest_ms - start_ms) // interval_ms
+            )
+            for index in range(1, checkpoint_count + 1):
+                due_ms = start_ms + index * interval_ms
                 event_id = (
-                    f"derived-reached-temperature-{experiment_id}-"
-                    f"{active['id']}"
+                    f"derived-aging-checkpoint-{experiment_id}-"
+                    f"{active['id']}-{index}"
                 )
                 if (
-                    ready
-                    and self.store.get_event_by_client_id(event_id) is None
-                ):
-                    point = recent[-1]
-                    self.store.add_experiment_event(
-                        experiment_id,
-                        {
-                            "client_event_id": event_id,
-                            "event_type": "reached_temperature",
-                            "occurred_at_client_ms": None,
-                            "received_at_server_ms": self.clock_ms(),
-                            "client_clock_offset_ms": None,
-                            "clock_sync_status": "server",
-                            "effective_at_ms": point["ts_ms"],
-                            "actor": "system",
-                            "source_type": "derived",
-                            "payload": {
-                                "sample_id": point["sample_id"],
-                                "value": point["value"],
-                                "metric_key": point["metric_key"],
-                                "device_id": point["device_id"],
-                                "range_min_c": float(lower),
-                                "range_max_c": float(upper),
-                                "consecutive_samples": required_count,
-                            },
-                        },
-                        active["id"],
+                    self.store.get_event_by_client_id(
+                        event_id, connection=conn
                     )
-                return self._telemetry_summary(
-                    experiment_id,
-                    self.store.list_experiment_events(experiment_id),
+                    is not None
+                ):
+                    continue
+                point = min(
+                    summary["temperature_series"],
+                    key=lambda item: abs(item["ts_ms"] - due_ms),
                 )
-        if (
-            active is None
-            or active["step_code"] != "R201-50"
-            or not summary["temperature_series"]
-        ):
-            return summary
-        interval_minutes = self._number(
-            experiment["spec_snapshot"].get(
-                "aging_checkpoint_interval_min", 20
-            ),
-            "aging_checkpoint_interval_min",
-        )
-        if interval_minutes <= 0:
-            raise R201Error("aging_checkpoint_interval_min must be positive")
-        interval_ms = int(interval_minutes * 60_000)
-        start_ms = active["started_effective_at_ms"]
-        latest_ms = summary["temperature_series"][-1]["ts_ms"]
-        checkpoint_count = max(0, (latest_ms - start_ms) // interval_ms)
-        for index in range(1, checkpoint_count + 1):
-            due_ms = start_ms + index * interval_ms
-            event_id = (
-                f"derived-aging-checkpoint-{experiment_id}-"
-                f"{active['id']}-{index}"
-            )
-            if self.store.get_event_by_client_id(event_id) is not None:
-                continue
-            point = min(
-                summary["temperature_series"],
-                key=lambda item: abs(item["ts_ms"] - due_ms),
-            )
-            payload = {
-                "checkpoint_index": index,
-                "due_at_ms": due_ms,
-                "sample_id": point["sample_id"],
-                "sampled_at_ms": point["ts_ms"],
-                "metric_key": point["metric_key"],
-                "value": point["value"],
-                "device_id": point["device_id"],
-            }
-            self.store.add_experiment_event(
+                payload = {
+                    "checkpoint_index": index,
+                    "due_at_ms": due_ms,
+                    "sample_id": point["sample_id"],
+                    "sampled_at_ms": point["ts_ms"],
+                    "metric_key": point["metric_key"],
+                    "value": point["value"],
+                    "device_id": point["device_id"],
+                }
+                self.store.add_experiment_event(
+                    experiment_id,
+                    {
+                        "client_event_id": event_id,
+                        "event_type": "aging_temperature_checkpoint",
+                        "occurred_at_client_ms": None,
+                        "received_at_server_ms": self.clock_ms(),
+                        "client_clock_offset_ms": None,
+                        "clock_sync_status": "server",
+                        "effective_at_ms": due_ms,
+                        "actor": "system",
+                        "source_type": "derived",
+                        "payload": payload,
+                    },
+                    active["id"],
+                    connection=conn,
+                )
+            return self._telemetry_summary(
                 experiment_id,
-                {
-                    "client_event_id": event_id,
-                    "event_type": "aging_temperature_checkpoint",
-                    "occurred_at_client_ms": None,
-                    "received_at_server_ms": self.clock_ms(),
-                    "client_clock_offset_ms": None,
-                    "clock_sync_status": "server",
-                    "effective_at_ms": due_ms,
-                    "actor": "system",
-                    "source_type": "derived",
-                    "payload": payload,
-                },
-                active["id"],
+                self.store.list_experiment_events(experiment_id),
             )
-        return self._telemetry_summary(
-            experiment_id,
-            self.store.list_experiment_events(experiment_id),
-        )
 
     def start_step(
         self,
@@ -1907,8 +1920,8 @@ class R201Service:
                     "client_clock_offset_ms is required for trusted clock"
                 )
             corrected = occurred - offset
-            earliest = received - 24 * 60 * 60 * 1000
-            latest = received + 24 * 60 * 60 * 1000
+            earliest = received - TRUSTED_EVENT_TIME_SKEW_MS
+            latest = received + TRUSTED_EVENT_TIME_SKEW_MS
             if earliest <= corrected <= latest:
                 effective = corrected
             else:
@@ -2309,7 +2322,11 @@ class R201Service:
         }
 
     def _record_telemetry_gap_deviations(
-        self, experiment: dict, active: dict, gaps: list[dict]
+        self,
+        experiment: dict,
+        active: dict,
+        gaps: list[dict],
+        connection=None,
     ):
         for gap in gaps:
             event_id = (
@@ -2317,7 +2334,12 @@ class R201Service:
                 f"{active['id']}-{gap['started_at_ms']}-"
                 f"{gap['ended_at_ms']}"
             )
-            if self.store.get_event_by_client_id(event_id) is not None:
+            if (
+                self.store.get_event_by_client_id(
+                    event_id, connection=connection
+                )
+                is not None
+            ):
                 continue
             event = {
                 "client_event_id": event_id,
@@ -2352,6 +2374,7 @@ class R201Service:
                     "opened_by": "system",
                 },
                 event,
+                connection=connection,
             )
 
     @staticmethod

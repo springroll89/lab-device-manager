@@ -299,6 +299,12 @@ def test_create_allows_blank_reviewer_and_suggests_next_daily_batch_id():
     assert service.suggest_batch_id("CEM", "20260723") == "20260723-CEM-02"
     assert service.suggest_batch_id("AEM", "20260723") == "20260723-AEM-01"
 
+    service.create_experiment(
+        {**CREATE, "batch_id": "20260723-CEM-ARCHIVE"}
+    )
+    service.create_experiment({**CREATE, "batch_id": "20260723-CEM-100"})
+    assert service.suggest_batch_id("CEM", "20260723") == "20260723-CEM-101"
+
 
 def test_material_lot_can_be_left_blank_for_fast_tablet_confirmation():
     service, _ = _service()
@@ -472,7 +478,7 @@ def test_event_rejects_non_numeric_client_timestamp():
         )
 
 
-def test_trusted_time_outside_24_hour_window_uses_server_time():
+def test_trusted_time_outside_30_second_window_uses_server_time():
     service, _ = _service()
     exp = service.create_experiment(CREATE)
     service.start_step(
@@ -481,7 +487,7 @@ def test_trusted_time_outside_24_hour_window_uses_server_time():
         exp["row_version"],
         {
             **_event("old-clock", 1),
-            "occurred_at_client_ms": -100_000_000,
+            "occurred_at_client_ms": 900_000,
         },
     )
     event = next(
@@ -621,7 +627,9 @@ def test_device_markers_derive_pump_delta_and_keep_provenance():
 
 
 def test_out_of_range_preview_requires_confirmation_and_closes_warning_without_reviewer():
-    service, _ = _service()
+    clock = Clock()
+    repo = Repository(":memory:")
+    service = R201Service(repo, clock_ms=clock)
     exp = service.create_experiment({**CREATE, "reviewer": ""})
     steps = [
         "R201-01",
@@ -647,6 +655,7 @@ def test_out_of_range_preview_requires_confirmation_and_closes_warning_without_r
             _event("warning-complete", index),
         )
     state = service.get_experiment(exp["id"])["experiment"]
+    clock.ms = 1_999_900
     start_data = {
         **_event("balance-start", 1),
         "occurred_at_client_ms": 2_000_000,
@@ -655,6 +664,7 @@ def test_out_of_range_preview_requires_confirmation_and_closes_warning_without_r
         exp["id"], "R201-32", state["row_version"], start_data
     )
     state = service.get_experiment(exp["id"])["experiment"]
+    clock.ms = 2_659_900
     finish_data = {
         **_event("balance-finish", 1),
         "occurred_at_client_ms": 2_660_000,
@@ -1382,3 +1392,69 @@ def test_telemetry_gap_generates_one_idempotent_deviation_candidate():
     assert [event["event_type"] for event in detail["events"]].count(
         "deviation_opened"
     ) == 1
+
+
+def test_telemetry_derived_writes_roll_back_together(monkeypatch):
+    service, repo = _service()
+    exp = service.create_experiment(
+        {
+            **CREATE,
+            "spec_snapshot": {
+                **CREATE["spec_snapshot"],
+                "telemetry_gap_threshold_ms": 300_000,
+            },
+        }
+    )
+    _advance_to_aging(service, exp["id"])
+    active = service.get_experiment(exp["id"])["active_step"]
+    device_id = repo.upsert_device(
+        "whd-rollback", "whd46", "反应温度"
+    )
+    service.add_data_source(
+        exp["id"],
+        {
+            **_event("bind-rollback-temp", 1),
+            "device_id": device_id,
+            "step_instance_id": active["id"],
+            "device_role": "reaction_temp",
+            "metric_key": "ch2_temp_c",
+            "channel_selector": "2",
+            "linked_at_ms": active["started_effective_at_ms"],
+            "link_method": "manual",
+        },
+    )
+    for minutes in (0, 20):
+        repo.add_sample(
+            None,
+            device_id,
+            active["started_effective_at_ms"] + minutes * 60_000,
+            "running",
+            None,
+            None,
+            40.0,
+            json.dumps({"ch2_temp_c": 40.0}),
+        )
+
+    original_add_event = service.store.add_experiment_event
+
+    def fail_checkpoint(*args, **kwargs):
+        data = args[1]
+        if data["event_type"] == "aging_temperature_checkpoint":
+            raise RuntimeError("checkpoint write failed")
+        return original_add_event(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.store, "add_experiment_event", fail_checkpoint
+    )
+
+    with pytest.raises(RuntimeError, match="checkpoint write failed"):
+        service.evaluate_telemetry(exp["id"])
+
+    detail = service.get_experiment(exp["id"])
+    assert detail["deviations"] == []
+    assert [event["event_type"] for event in detail["events"]].count(
+        "deviation_opened"
+    ) == 0
+    assert [event["event_type"] for event in detail["events"]].count(
+        "aging_temperature_checkpoint"
+    ) == 0

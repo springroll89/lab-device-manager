@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Iterator, Optional
 
 
@@ -194,9 +194,32 @@ class ExperimentStore:
             ).fetchall()
         return [self._experiment(row) for row in rows]
 
-    def get_event_by_client_id(self, client_event_id: str) -> Optional[dict]:
+    def max_numeric_batch_sequence(self, prefix: str) -> int:
+        suffix_start = len(prefix) + 1
         with self._lock:
             row = self._conn.execute(
+                """SELECT MAX(CAST(SUBSTR(batch_id, ?) AS INTEGER)) AS sequence
+                   FROM experiment
+                   WHERE batch_id LIKE ?
+                     AND SUBSTR(batch_id, ?) != ''
+                     AND SUBSTR(batch_id, ?) NOT GLOB '*[^0-9]*'""",
+                (
+                    suffix_start,
+                    f"{prefix}%",
+                    suffix_start,
+                    suffix_start,
+                ),
+            ).fetchone()
+        return int(row["sequence"] or 0)
+
+    def get_event_by_client_id(
+        self,
+        client_event_id: str,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> Optional[dict]:
+        conn = connection or self._conn
+        with self._lock:
+            row = conn.execute(
                 "SELECT * FROM experiment_event WHERE client_event_id=?",
                 (client_event_id,),
             ).fetchone()
@@ -1216,9 +1239,18 @@ class ExperimentStore:
         return f"{prefix}{sequence + 1:02d}"
 
     def add_deviation(
-        self, experiment_id: int, data: dict, event: Optional[dict] = None
+        self,
+        experiment_id: int,
+        data: dict,
+        event: Optional[dict] = None,
+        connection: Optional[sqlite3.Connection] = None,
     ) -> dict:
-        with self.transaction() as conn:
+        transaction = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with transaction as conn:
             if event is not None:
                 existing_event = conn.execute(
                     """SELECT payload_json FROM experiment_event
