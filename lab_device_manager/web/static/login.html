@@ -86,24 +86,22 @@
     <form id="loginForm" class="card" novalidate>
       <img src="/static/logo.png" alt="Puricore" class="logo-small">
       <h1>实验室登录</h1>
-      <p id="loginIntro">正在检查登录方式…</p>
+      <p id="loginIntro">请输入管理员分配的账号和密码。</p>
       <div id="loginStatus" class="login-status hidden" role="status" aria-live="polite"></div>
       <div class="field">
         <label for="username">账号</label>
-        <input type="text" id="username" placeholder="请输入姓名或账号" autocomplete="username" autofocus>
+        <input type="text" id="username" placeholder="请输入账号" autocomplete="username" autofocus required>
       </div>
-      <div id="passwordField" class="field">
+      <div class="field">
         <label for="password">密码</label>
-        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
+        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password" required>
       </div>
       <button id="loginButton" type="submit" class="btn">登录</button>
-      <div class="hint">登录后，姓名会自动写入批次操作员和操作记录。</div>
+      <div class="hint">登录账号会自动写入批次操作员和审计记录。</div>
     </form>
   </div>
 </div>
 <script>
-let passwordRequired = true;
-
 function setLoginStatus(message, type = "error") {
   const status = document.getElementById("loginStatus");
   status.textContent = message;
@@ -126,23 +124,13 @@ function safeNextPath() {
 
 async function loadAuthMode() {
   const intro = document.getElementById("loginIntro");
-  const passwordField = document.getElementById("passwordField");
-  const password = document.getElementById("password");
-  const button = document.getElementById("loginButton");
   try {
     const response = await fetch("/api/auth-mode");
     if (!response.ok) throw new Error();
-    const mode = await response.json();
-    passwordRequired = Boolean(mode.password_required);
-    passwordField.classList.toggle("hidden", !passwordRequired);
-    password.required = passwordRequired;
-    intro.textContent = passwordRequired
-      ? "请输入姓名和实验室通行密码。"
-      : "当前为本地身份模式，输入姓名即可开始。";
-    button.textContent = passwordRequired ? "登录" : "确认操作员";
+    await response.json();
+    intro.textContent = "请输入管理员分配的账号和密码。";
   } catch (_) {
-    passwordRequired = true;
-    intro.textContent = "暂时无法读取登录方式。";
+    intro.textContent = "暂时无法连接登录服务。";
     setLoginStatus("登录服务连接失败，请刷新页面后重试。");
   }
 }
@@ -154,11 +142,11 @@ async function doLogin(event) {
   const button = document.getElementById("loginButton");
   clearLoginStatus();
   if (!username) {
-    setLoginStatus("请输入姓名或账号。");
+    setLoginStatus("请输入账号。");
     document.getElementById("username").focus();
     return;
   }
-  if (passwordRequired && !pwd) {
+  if (!pwd) {
     setLoginStatus("请输入密码。");
     document.getElementById("password").focus();
     return;
@@ -173,21 +161,26 @@ async function doLogin(event) {
     });
     const data = await r.json().catch(() => ({}));
     if (r.ok) {
-      setLoginStatus(`登录成功，当前操作员：${data.operator || username}`, "success");
-      window.location.replace(safeNextPath());
+      setLoginStatus(`登录成功，当前用户：${data.operator || username}`, "success");
+      const nextPath = safeNextPath();
+      window.location.replace(data.must_change_password
+        ? `/change-password?next=${encodeURIComponent(nextPath)}`
+        : nextPath);
     } else {
-      const message = data.error === "operator name is required"
-        ? "请输入姓名或账号。"
-        : data.error === "invalid password"
-          ? "密码不正确，请重新输入。"
-          : "登录失败，请重试。";
+      const message = data.error === "credentials_required"
+        ? "请输入账号和密码。"
+        : data.error === "too_many_attempts"
+          ? "登录失败次数过多，请 5 分钟后再试。"
+          : data.error === "invalid_credentials"
+            ? "账号或密码不正确。"
+            : "登录失败，请重试。";
       setLoginStatus(message);
     }
   } catch (e) {
     setLoginStatus("网络连接失败，请检查本地服务后重试。");
   } finally {
     button.disabled = false;
-    button.textContent = passwordRequired ? "登录" : "确认操作员";
+    button.textContent = "登录";
   }
 }
 

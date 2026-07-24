@@ -37,11 +37,13 @@ def _snap(state):
                                    "pause_delay_ms": 5000, "repeat_count": 3, "force": 100})
 
 
-def _app(tmp_path, login_password: str = ""):
+def _app(tmp_path, *, auth_bypass: bool = True):
     repo = Repository(":memory:")
     did = repo.upsert_device("pump-1", "tyd02", alias="注射泵")
     eng = StaticEngine({did: _snap("running")}, {did: DeviceConfig(name="pump-1", type="tyd02", alias="注射泵")})
-    return create_app(eng, repo, secret_key="test-secret", login_password=login_password), repo, did
+    app = create_app(eng, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=auth_bypass)
+    return app, repo, did
 
 
 def test_status_lists_devices(tmp_path):
@@ -163,6 +165,7 @@ def test_whd_realtime_data_reads_latest_snapshot_without_polling_or_writing():
         },
     )
     app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
 
     response = app.test_client().get(
         f"/api/devices/{device_id}/realtime-data"
@@ -217,6 +220,7 @@ def test_whd_connect_hands_verified_port_to_managed_engine(monkeypatch):
         },
     )
     app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
 
     response = app.test_client().post(
         f"/api/devices/{device_id}/connect",
@@ -391,159 +395,323 @@ def test_shared_premium_theme_is_served_by_every_operator_page(tmp_path):
         "sensor.html",
         "login.html",
         "experiment.html",
+        "accounts.html",
+        "change-password.html",
     ):
         response = client.get(f"/static/{page}")
         assert response.status_code == 200
         assert b"/static/puricore-theme.css" in response.data
 
 
-def test_login_page_serves_identity_mode_when_password_is_disabled(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="")
+def test_account_creation_keeps_stable_form_reference(tmp_path):
+    app, repo, did = _app(tmp_path)
+    script = app.test_client().get("/static/accounts.js")
+
+    assert script.status_code == 200
+    assert b"const form = event.currentTarget" in script.data
+    assert b"form.reset()" in script.data
+    assert b"event.currentTarget.reset()" not in script.data
+
+
+def _authenticated_app(tmp_path):
+    return _app(tmp_path, auth_bypass=False)
+
+
+def _login(client, username="admin", password="admin"):
+    return client.post(
+        "/login",
+        json={"username": username, "password": password},
+    )
+
+
+def _change_password(client, current_password, new_password):
+    session_data = client.get("/api/session").get_json()
+    return client.post(
+        "/api/account/password",
+        json={
+            "current_password": current_password,
+            "new_password": new_password,
+        },
+        headers={"X-CSRF-Token": session_data["csrf_token"]},
+    )
+
+
+def test_login_is_always_required_for_pages_and_apis(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+
+    page = client.get("/")
+    device = client.get(f"/device/{did}")
+    api = client.get("/api/status")
+    direct_static_page = client.get("/static/index.html")
+    theme = client.get("/static/puricore-theme.css")
+
+    assert page.status_code == 302
+    assert page.headers["Location"].startswith("/login?next=")
+    assert device.status_code == 302
+    assert api.status_code == 401
+    assert api.get_json()["error"] == "unauthorized"
+    assert direct_static_page.status_code == 302
+    assert theme.status_code == 200
+
+
+def test_login_page_and_account_auth_mode_are_public(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
     client = app.test_client()
 
     page = client.get("/login")
     mode = client.get("/api/auth-mode")
 
     assert page.status_code == 200
-    assert b"\xe8\xb4\xa6\xe5\x8f\xb7" in page.data  # "账号"
-    assert mode.status_code == 200
-    assert mode.get_json() == {"password_required": False}
-
-
-def test_identity_mode_login_sets_named_operator_without_password(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="")
-    client = app.test_client()
-
-    response = client.post("/login", json={"username": "王小明"})
-
-    assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "operator": "王小明"}
-    assert client.get("/api/session").get_json() == {
-        "authenticated": True,
-        "operator": "王小明",
-        "password_required": False,
+    assert "账号".encode() in page.data
+    assert "密码".encode() in page.data
+    assert mode.get_json() == {
+        "password_required": True,
+        "account_auth": True,
+        "initial_username": "admin",
     }
 
 
-def test_index_requires_login_when_enabled(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    r = app.test_client().get("/")
-    assert r.status_code == 302
-    assert r.headers["Location"] == "/login"
-
-
-def test_device_page_requires_login_when_enabled(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    r = app.test_client().get(f"/device/{did}")
-    assert r.status_code == 302
-    assert r.headers["Location"] == "/login"
-
-
-def test_run_page_requires_login_when_enabled(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    rid = repo.open_run(did, 1, 1751000000_000, {})
-    r = app.test_client().get(f"/run/{rid}")
-    assert r.status_code == 302
-    assert r.headers["Location"] == "/login"
-
-
-def test_login_page_served_when_enabled(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
+def test_initial_admin_login_requires_immediate_password_change(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
     client = app.test_client()
-    r = client.get("/login")
-    assert r.status_code == 200
-    assert b"\xe5\xaf\x86\xe7\xa0\x81" in r.data  # "密码"
-    assert client.get("/api/auth-mode").get_json() == {
-        "password_required": True
+
+    login = _login(client)
+    assert login.status_code == 200
+    assert login.get_json()["role"] == "super_admin"
+    assert login.get_json()["must_change_password"] is True
+
+    page = client.get("/")
+    api = client.get("/api/status")
+    password_page = client.get("/change-password")
+
+    assert page.status_code == 302
+    assert page.headers["Location"].startswith("/change-password?next=")
+    assert api.status_code == 403
+    assert api.get_json()["error"] == "password_change_required"
+    assert password_page.status_code == 200
+
+
+def test_admin_changes_password_and_can_enter_system(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    missing_csrf = client.post(
+        "/api/account/password",
+        json={
+            "current_password": "admin",
+            "new_password": "Admin1234",
+        },
+    )
+    wrong_current = _change_password(
+        client, "wrong-current", "Admin1234"
+    )
+    changed = _change_password(client, "admin", "Admin1234")
+
+    assert missing_csrf.status_code == 403
+    assert missing_csrf.get_json()["error"] == "invalid_csrf_token"
+    assert wrong_current.status_code == 400
+    assert changed.status_code == 200
+    assert client.get("/").status_code == 200
+    assert client.get("/api/status").status_code == 200
+    session_data = client.get("/api/session").get_json()
+    assert session_data["operator"] == "系统管理员"
+    assert session_data["role"] == "super_admin"
+    assert session_data["can_manage_accounts"] is True
+
+
+def test_login_rejects_invalid_credentials_and_rate_limits(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+
+    responses = [
+        _login(client, "admin", "wrong-password")
+        for _ in range(6)
+    ]
+
+    assert [response.status_code for response in responses[:5]] == [
+        401, 401, 401, 401, 401
+    ]
+    assert responses[0].get_json()["error"] == "invalid_credentials"
+    assert responses[5].status_code == 429
+    assert responses[5].get_json()["error"] == "too_many_attempts"
+
+
+def test_super_admin_creates_supervisor_and_operator_accounts(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _change_password(client, "admin", "Admin1234")
+    csrf = client.get("/api/session").get_json()["csrf_token"]
+
+    supervisor = client.post(
+        "/api/accounts",
+        json={
+            "username": "lablead",
+            "display_name": "实验室主管",
+            "password": "Lead12345",
+            "role": "supervisor",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    operator = client.post(
+        "/api/accounts",
+        json={
+            "username": "operator01",
+            "display_name": "操作员一号",
+            "password": "Operator123",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    duplicate = client.post(
+        "/api/accounts",
+        json={
+            "username": "OPERATOR01",
+            "display_name": "重复账号",
+            "password": "Operator456",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+
+    assert supervisor.status_code == 201
+    assert supervisor.get_json()["must_change_password"] is True
+    assert "password_hash" not in supervisor.get_json()
+    assert operator.status_code == 201
+    assert duplicate.status_code == 409
+    account_data = client.get("/api/accounts").get_json()
+    users = account_data["users"]
+    assert account_data["creatable_roles"] == [
+        "operator", "supervisor"
+    ]
+    assert {user["role"] for user in users} == {
+        "super_admin", "supervisor", "operator"
     }
 
 
-def test_login_with_valid_password_creates_session(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-    r = client.post(
-        "/login",
-        json={"username": "王小明", "password": "secret"},
-    )
-    assert r.status_code == 200
-    assert r.get_json()["ok"] is True
-    with client.session_transaction() as sess:
-        assert sess.get("logged_in") is True
-
-
-def test_login_session_carries_operator_name(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-
-    r = client.post(
-        "/login",
-        json={"username": "王小明", "password": "secret"},
+def test_supervisor_can_manage_only_operators(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    admin_csrf = admin.get("/api/session").get_json()["csrf_token"]
+    admin.post(
+        "/api/accounts",
+        json={
+            "username": "labboss",
+            "display_name": "李主管",
+            "password": "Lead12345",
+            "role": "supervisor",
+        },
+        headers={"X-CSRF-Token": admin_csrf},
     )
 
-    assert r.status_code == 200
-    assert client.get("/api/session").get_json()["operator"] == "王小明"
-    with client.session_transaction() as sess:
-        assert sess.get("username") == "王小明"
-
-
-def test_login_with_invalid_password_rejected(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-    r = client.post(
-        "/login",
-        json={"username": "王小明", "password": "wrong"},
+    supervisor = app.test_client()
+    _login(supervisor, "labboss", "Lead12345")
+    _change_password(supervisor, "Lead12345", "Lead67890")
+    supervisor_csrf = supervisor.get("/api/session").get_json()["csrf_token"]
+    create_operator = supervisor.post(
+        "/api/accounts",
+        json={
+            "username": "worker01",
+            "display_name": "王操作员",
+            "password": "Worker123",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": supervisor_csrf},
     )
-    assert r.status_code == 401
-    assert r.get_json()["ok"] is False
-    with client.session_transaction() as sess:
-        assert sess.get("logged_in") is None
-
-
-def test_login_rejects_missing_operator_name(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-
-    r = client.post("/login", json={"username": " ", "password": "secret"})
-
-    assert r.status_code == 400
-    assert r.get_json()["error"] == "operator name is required"
-    with client.session_transaction() as sess:
-        assert sess.get("logged_in") is None
-
-
-def test_authenticated_user_can_access_protected_routes(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-    client.post(
-        "/login",
-        json={"username": "王小明", "password": "secret"},
+    create_supervisor = supervisor.post(
+        "/api/accounts",
+        json={
+            "username": "otherlead",
+            "display_name": "另一主管",
+            "password": "Other1234",
+            "role": "supervisor",
+        },
+        headers={"X-CSRF-Token": supervisor_csrf},
     )
-    r = client.get("/")
-    assert r.status_code == 200
-    r = client.get(f"/device/{did}")
-    assert r.status_code == 200
-    r = client.get("/api/status")
-    assert r.status_code == 200
-    assert r.get_json()["devices"][0]["name"] == "pump-1"
+
+    assert create_operator.status_code == 201
+    assert create_supervisor.status_code == 403
+    visible = supervisor.get("/api/accounts").get_json()["users"]
+    assert {user["role"] for user in visible} == {
+        "supervisor", "operator"
+    }
 
 
-def test_logout_clears_session(tmp_path):
-    app, repo, did = _app(tmp_path, login_password="secret")
-    client = app.test_client()
-    client.post(
-        "/login",
-        json={"username": "王小明", "password": "secret"},
+def test_operator_cannot_open_account_management(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    csrf = admin.get("/api/session").get_json()["csrf_token"]
+    admin.post(
+        "/api/accounts",
+        json={
+            "username": "tablet01",
+            "display_name": "平板操作员",
+            "password": "Tablet123",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": csrf},
     )
-    r = client.post("/logout")
-    assert r.status_code == 302
-    assert r.headers["Location"] == "/login"
-    with client.session_transaction() as sess:
-        assert "logged_in" not in sess
+
+    operator = app.test_client()
+    _login(operator, "tablet01", "Tablet123")
+    _change_password(operator, "Tablet123", "Tablet456")
+
+    assert operator.get("/experiments").status_code == 200
+    assert operator.get("/accounts").status_code == 403
+    assert operator.get("/api/accounts").status_code == 403
+    assert operator.get("/change-password").status_code == 200
 
 
-def test_api_routes_require_login_when_enabled(tmp_path):
-    """When login_password is set, API routes must return 401 if not authenticated."""
-    app, repo, did = _app(tmp_path, login_password="secret")
-    r = app.test_client().get("/api/status")
-    assert r.status_code == 401
-    assert r.get_json()["error"] == "unauthorized"
+def test_admin_can_reset_and_disable_subordinate_account(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    csrf = admin.get("/api/session").get_json()["csrf_token"]
+    created = admin.post(
+        "/api/accounts",
+        json={
+            "username": "disabled01",
+            "display_name": "待停用操作员",
+            "password": "Enabled123",
+            "role": "operator",
+        },
+        headers={"X-CSRF-Token": csrf},
+    ).get_json()
+
+    reset = admin.post(
+        f"/api/accounts/{created['id']}/reset-password",
+        json={"password": "Reset1234"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    disabled = admin.patch(
+        f"/api/accounts/{created['id']}/status",
+        json={"is_active": False},
+        headers={"X-CSRF-Token": csrf},
+    )
+    user_client = app.test_client()
+    rejected = _login(user_client, "disabled01", "Reset1234")
+
+    assert reset.status_code == 200
+    assert reset.get_json()["must_change_password"] is True
+    assert disabled.status_code == 200
+    assert disabled.get_json()["is_active"] is False
+    assert rejected.status_code == 401
+
+
+def test_logout_clears_database_account_session(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.post("/logout")
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/login"
+    assert client.get("/api/session").status_code == 401

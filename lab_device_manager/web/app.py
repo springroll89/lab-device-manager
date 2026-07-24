@@ -1,15 +1,12 @@
 from __future__ import annotations
 import csv
-import hmac
 import io
 import json as _json
 import time
 from io import BytesIO
 
-import functools
 import sqlite3
-from datetime import timedelta
-from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory, session, url_for
+from flask import Flask, Response, abort, jsonify, request, send_from_directory, url_for
 from openpyxl import Workbook
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -34,6 +31,7 @@ from lab_device_manager.experiments.service import (
     R201Service,
     STEP_LABELS,
 )
+from lab_device_manager.web.auth import AuthManager
 from lab_device_manager.web.trace_labels import (
     qr_svg,
     storage_location_label_html,
@@ -650,32 +648,14 @@ def _build_experiment_pdf(detail: dict) -> bytes:
     return buf.getvalue()
 
 
-def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
+def create_app(engine, repo, secret_key: str = ""):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     r201 = R201Service(repo)
     app.secret_key = secret_key if secret_key else _load_or_create_secret()
-    app.config.update(
-        SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
-    )
+    auth = AuthManager(app, repo)
     app.register_blueprint(create_whd46_blueprint(engine, repo))
-
-    def login_required(view):
-        @functools.wraps(view)
-        def wrapped(*args, **kwargs):
-            if login_password and not session.get("logged_in"):
-                return redirect(url_for("login_page"))
-            return view(*args, **kwargs)
-        return wrapped
-
-    def _unauthorized_response():
-        if request.path.startswith("/api/") or request.is_json:
-            return jsonify({"error": "unauthorized"}), 401
-        return redirect(url_for("login_page"))
-
-    def _current_operator():
-        return str(session.get("username") or "本机操作员").strip()
+    login_required = auth.login_required
+    _current_operator = auth.current_operator
 
     def _device_capture(experiment_id: int):
         captured_at_ms = int(time.time() * 1000)
@@ -801,51 +781,6 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                     selected_device_id
                 )
 
-    @app.before_request
-    def require_login():
-        if not login_password:
-            return None
-        public_endpoints = {"login_page", "login", "auth_mode", "static"}
-        if request.endpoint in public_endpoints:
-            return None
-        if session.get("logged_in"):
-            return None
-        return _unauthorized_response()
-
-    @app.get("/login")
-    def login_page():
-        return send_from_directory(app.static_folder, "login.html")
-
-    @app.get("/api/auth-mode")
-    def auth_mode():
-        return jsonify({"password_required": bool(login_password)})
-
-    @app.post("/login")
-    def login():
-        body = request.get_json(silent=True) or {}
-        username = str(body.get("username") or "").strip()[:64]
-        if not username:
-            return jsonify(
-                {"ok": False, "error": "operator name is required"}
-            ), 400
-        supplied_password = str(body.get("password") or "")
-        if login_password and not hmac.compare_digest(
-            supplied_password,
-            login_password,
-        ):
-            return jsonify(
-                {"ok": False, "error": "invalid password"}
-            ), 401
-        session["logged_in"] = True
-        session["username"] = username
-        return jsonify({"ok": True, "operator": username})
-
-    @app.post("/logout")
-    def logout():
-        session.pop("logged_in", None)
-        session.pop("username", None)
-        return redirect(url_for("login_page"))
-
     @app.get("/")
     @login_required
     def index():
@@ -945,16 +880,6 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     def api_experiments():
         return jsonify(r201.list_experiments())
 
-    @app.get("/api/session")
-    def api_session():
-        return jsonify(
-            {
-                "authenticated": bool(session.get("username")),
-                "operator": _current_operator(),
-                "password_required": bool(login_password),
-            }
-        )
-
     @app.get("/api/experiments/next-batch-id")
     def api_next_batch_id():
         try:
@@ -970,10 +895,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     def api_create_experiment():
         try:
             body = dict(request.get_json(silent=True) or {})
-            if login_password:
-                body["operator"] = _current_operator()
-            else:
-                body.setdefault("operator", _current_operator())
+            body["operator"] = _current_operator()
             body.setdefault("reviewer", "")
             created = r201.create_experiment(body)
             return jsonify(created), 201
@@ -997,10 +919,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/trace-items")
     def api_create_trace_items(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             return jsonify(
                 r201.create_trace_items(experiment_id, body)
@@ -1011,10 +930,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/trace-items/<int:trace_item_id>/store")
     def api_store_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             return jsonify(
                 r201.transition_trace_item(
@@ -1027,10 +943,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/trace-items/<int:trace_item_id>/retrieve")
     def api_retrieve_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             return jsonify(
                 r201.transition_trace_item(
@@ -1043,10 +956,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/trace-labels")
     def api_request_trace_labels(experiment_id):
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             jobs = r201.request_trace_labels(experiment_id, body)
             item_ids = ",".join(
@@ -1110,10 +1020,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/storage-locations")
     def api_create_storage_location():
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             return jsonify(r201.create_storage_location(body)), 201
         except R201Error as exc:
@@ -1122,10 +1029,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/storage-locations/<int:location_id>/print")
     def api_request_location_label(location_id):
         body = dict(request.get_json(silent=True) or {})
-        if login_password:
-            body["actor"] = _current_operator()
-        else:
-            body.setdefault("actor", _current_operator())
+        body["actor"] = _current_operator()
         try:
             job = r201.request_location_label(location_id, body)
             return jsonify(
@@ -1187,6 +1091,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/start")
     def api_start_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
+        body["actor"] = _current_operator()
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1206,6 +1111,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     )
     def api_preview_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
+        body["actor"] = _current_operator()
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1223,6 +1129,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/complete")
     def api_complete_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
+        body["actor"] = _current_operator()
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1240,6 +1147,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
     @app.post("/api/experiments/<int:experiment_id>/measurements/viscosity")
     def api_record_viscosity(experiment_id):
         body = dict(request.get_json(silent=True) or {})
+        body["actor"] = _current_operator()
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -1252,9 +1160,11 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
 
     @app.post("/api/experiments/<int:experiment_id>/data-sources")
     def api_add_experiment_data_source(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        body["actor"] = _current_operator()
         try:
             created = r201.add_data_source(
-                experiment_id, request.get_json(silent=True) or {}
+                experiment_id, body
             )
             return jsonify(created), 201
         except R201Error as exc:
@@ -1272,8 +1182,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             return _r201_error(R201Error("device not found", 404))
         body["device_id"] = device_id
         body["device_type"] = config.type
-        if login_password:
-            body["actor"] = _current_operator()
+        body["actor"] = _current_operator()
         try:
             selection = r201.select_process_device(
                 experiment_id,
@@ -1290,9 +1199,11 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
 
     @app.post("/api/experiments/<int:experiment_id>/deviations")
     def api_open_experiment_deviation(experiment_id):
+        body = dict(request.get_json(silent=True) or {})
+        body["opened_by"] = _current_operator()
         try:
             created = r201.open_deviation(
-                experiment_id, request.get_json(silent=True) or {}
+                experiment_id, body
             )
             return jsonify(created), 201
         except R201Error as exc:
@@ -1303,11 +1214,13 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
         "<int:deviation_id>/resolve"
     )
     def api_resolve_experiment_deviation(experiment_id, deviation_id):
+        body = dict(request.get_json(silent=True) or {})
+        body["reviewed_by"] = _current_operator()
         try:
             resolved = r201.resolve_deviation(
                 experiment_id,
                 deviation_id,
-                request.get_json(silent=True) or {},
+                body,
             )
             return jsonify(resolved)
         except R201Error as exc:
@@ -1321,7 +1234,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                 r201.submit(
                     experiment_id,
                     body.get("row_version"),
-                    str(body.get("actor", "")),
+                    _current_operator(),
                     str(body.get("client_event_id", "")),
                 )
             )
@@ -1329,6 +1242,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/review")
+    @auth.roles_required("super_admin", "supervisor")
     def api_review_experiment(experiment_id):
         body = request.get_json(silent=True) or {}
         try:
@@ -1337,7 +1251,7 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
                     experiment_id,
                     body.get("row_version"),
                     str(body.get("action", "")),
-                    str(body.get("reviewer", "")),
+                    _current_operator(),
                     str(body.get("client_event_id", "")),
                     body.get("disposition"),
                 )

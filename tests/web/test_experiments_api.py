@@ -36,7 +36,9 @@ def _app():
         {did: snap},
         {did: DeviceConfig(name="pump-1", type="tyd02", alias="注射泵")},
     )
-    return create_app(engine, repo, secret_key="test-secret"), repo, did
+    app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
+    return app, repo, did
 
 
 def _multi_stirrer_app():
@@ -63,11 +65,9 @@ def _multi_stirrer_app():
             alias=alias,
         )
     engine = StaticEngine(latest, device_map)
-    return (
-        create_app(engine, repo, secret_key="test-secret"),
-        repo,
-        device_ids,
-    )
+    app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
+    return app, repo, device_ids
 
 
 CREATE = {
@@ -137,11 +137,11 @@ def test_next_batch_id_and_session_operator_api():
     app, _, _ = _app()
     client = app.test_client()
 
-    assert client.get("/api/session").get_json() == {
-        "authenticated": False,
-        "operator": "本机操作员",
-        "password_required": False,
-    }
+    session_data = client.get("/api/session").get_json()
+    assert session_data["authenticated"] is True
+    assert session_data["operator"] == "测试管理员"
+    assert session_data["role"] == "super_admin"
+    assert session_data["can_manage_accounts"] is True
     first = client.get(
         "/api/experiments/next-batch-id"
         "?membrane_system=AEM&date=20260723"
