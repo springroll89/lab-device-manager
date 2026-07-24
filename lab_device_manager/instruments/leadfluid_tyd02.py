@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 import struct
 import time
 from lab_device_manager.instruments.base import StatusSnapshot
+
+logger = logging.getLogger(__name__)
 
 VOLUME_UNITS = {0: "nL", 1: "uL", 2: "mL", 3: "L"}
 WORK_MODES = {0: "仅注入", 1: "仅抽取", 2: "抽取/注入", 3: "注入/抽取", 4: "连续"}
@@ -123,8 +126,12 @@ def _read_mode_setpoints(client, mode, wo):
             # Continuous-mode rate unit is in holding register 4022.
             result["inject_rate_unit"] = RATE_UNITS.get(
                 decode_uint16(client.read_holding_registers(4022, 1)), "")
-    except Exception:
-        pass   # mode structure unreadable → leave None
+    except Exception as exc:
+        logger.warning(
+            "TYD02 mode setpoints are unreadable; keeping values empty: %s",
+            exc,
+        )
+        result["_read_error"] = str(exc)
     return result
 
 
@@ -225,6 +232,8 @@ class TYD02Adapter:
         metrics["inject_rate_unit"] = ms["inject_rate_unit"]
         metrics["extract_rate"] = ms["extract_rate"]
         metrics["extract_rate_unit"] = ms["extract_rate_unit"]
+        if ms.get("_read_error"):
+            metrics["_setpoint_read_error"] = ms["_read_error"]
         metrics["pause_delay_ms"] = pause_h * 3600000 + pause_m * 60000 + pause_s * 1000 + pause_ms_raw
         metrics["repeat_count"] = decode_uint16(c.read_holding_registers(4097, 1))
         metrics["force"] = decode_uint16(c.read_holding_registers(4027, 1))

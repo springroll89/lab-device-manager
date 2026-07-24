@@ -21,7 +21,7 @@ def test_sampler_identity_failure_uses_unknown():
     assert s._device_id == "unknown"
 
 
-def test_sampler_survives_on_sample_exception():
+def test_sampler_survives_and_logs_on_sample_exception(caplog):
     class GoodAdapter:
         def identity(self):
             return "dev"
@@ -29,8 +29,10 @@ def test_sampler_survives_on_sample_exception():
             return _snap()
     def bad_cb(snap):
         raise RuntimeError("callback boom")
-    s = Sampler(GoodAdapter(), interval_s=0.02, on_sample=bad_cb)
-    s.start()
-    time.sleep(0.08)
-    s.stop()
+    with caplog.at_level("ERROR", logger="lab_device_manager.sampler"):
+        s = Sampler(GoodAdapter(), interval_s=0.02, on_sample=bad_cb)
+        s.start()
+        time.sleep(0.08)
+        s.stop()
     assert not s._thread.is_alive()
+    assert "sample callback failed for device dev" in caplog.text

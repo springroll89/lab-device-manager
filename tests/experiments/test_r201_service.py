@@ -1,5 +1,7 @@
 import hashlib
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -395,6 +397,24 @@ def test_reusing_idempotency_key_for_another_operation_is_rejected():
         )
 
 
+def test_start_step_maps_active_step_unique_race_to_conflict(monkeypatch):
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+
+    def raise_unique_race(*_args, **_kwargs):
+        raise sqlite3.IntegrityError("idx_step_one_active")
+
+    monkeypatch.setattr(service.store, "start_step", raise_unique_race)
+    with pytest.raises(R201Error) as caught:
+        service.start_step(
+            exp["id"],
+            "R201-01",
+            exp["row_version"],
+            _event("raced-start", 1),
+        )
+    assert caught.value.status_code == 409
+
+
 def test_trusted_client_time_is_corrected_and_keeps_audit_evidence():
     service, _ = _service()
     exp = service.create_experiment(CREATE)
@@ -421,6 +441,56 @@ def test_trusted_client_time_is_corrected_and_keeps_audit_evidence():
     assert event["clock_sync_status"] == "trusted"
     assert event["effective_at_ms"] == 1_000_000
     assert event["actor"] == "张三"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), True])
+def test_numeric_fields_reject_non_finite_values_and_booleans(value):
+    service, _ = _service()
+    with pytest.raises(R201Error, match="must be"):
+        service.create_experiment(
+            {
+                **CREATE,
+                "target_viscosity_min_mpas": value,
+            }
+        )
+
+
+def test_event_rejects_non_numeric_client_timestamp():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+    with pytest.raises(
+        R201Error, match="occurred_at_client_ms must be an integer"
+    ):
+        service.start_step(
+            exp["id"],
+            "R201-01",
+            exp["row_version"],
+            {
+                **_event("bad-clock", 1),
+                "occurred_at_client_ms": "not-a-time",
+            },
+        )
+
+
+def test_trusted_time_outside_24_hour_window_uses_server_time():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+    service.start_step(
+        exp["id"],
+        "R201-01",
+        exp["row_version"],
+        {
+            **_event("old-clock", 1),
+            "occurred_at_client_ms": -100_000_000,
+        },
+    )
+    event = next(
+        item
+        for item in service.get_experiment(exp["id"])["events"]
+        if item["client_event_id"] == "old-clock-1"
+    )
+    assert event["clock_sync_status"] == "untrusted"
+    assert event["effective_at_ms"] == event["received_at_server_ms"]
 
 
 def test_step_completion_validates_required_fields():
@@ -611,7 +681,7 @@ def test_out_of_range_preview_requires_confirmation_and_closes_warning_without_r
         },
     )
     assert completed["deviations"][0]["status"] == "closed"
-    assert completed["deviations"][0]["reviewed_by"] == "张三"
+    assert completed["deviations"][0]["reviewed_by"] is None
 
 
 def test_viscosity_button_can_capture_complete_device_reading():
@@ -714,22 +784,24 @@ def test_submit_and_parallel_validation_release():
         {
             **_event("resolve-deviation", 1),
             "reviewed_by": "李四",
-            "impact_assessment": "不影响本批关键质量属性",
-            "disposition": "continue",
-            "cause": "测试偏差",
-        },
-    )
+                "impact_assessment": "不影响本批关键质量属性",
+                "disposition": "continue",
+                "cause": "测试偏差",
+                "row_version": state["row_version"],
+            },
+        )
     repeated = service.resolve_deviation(
         exp["id"],
         deviation["id"],
         {
             **_event("resolve-deviation", 1),
             "reviewed_by": "李四",
-            "impact_assessment": "不影响本批关键质量属性",
-            "disposition": "continue",
-            "cause": "测试偏差",
-        },
-    )
+                "impact_assessment": "不影响本批关键质量属性",
+                "disposition": "continue",
+                "cause": "测试偏差",
+                "row_version": state["row_version"],
+            },
+        )
     assert resolved["status"] == "closed"
     assert repeated["id"] == resolved["id"]
     submitted = service.submit(exp["id"], state["row_version"], actor="张三", client_event_id="submit-1")
@@ -847,6 +919,114 @@ def test_manual_deviation_is_idempotent_and_audited():
     assert [event["event_type"] for event in detail["events"]].count(
         "deviation_opened"
     ) == 1
+
+
+def test_concurrent_manual_deviations_get_unique_sequential_numbers():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+
+    def open_one(index):
+        return service.open_deviation(
+            exp["id"],
+            {
+                **_event("parallel-deviation", index),
+                "description": f"并发偏差 {index}",
+                "opened_by": "张三",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        created = list(pool.map(open_one, (1, 2)))
+
+    assert sorted(item["deviation_no"] for item in created) == [
+        "20260723-CEM-01-DEV-01",
+        "20260723-CEM-01-DEV-02",
+    ]
+
+
+def test_continue_deviation_requires_current_row_version():
+    service, _ = _service()
+    exp = service.create_experiment(CREATE)
+    deviation = service.open_deviation(
+        exp["id"],
+        {
+            **_event("versioned-deviation", 1),
+            "description": "版本冲突验证",
+            "opened_by": "张三",
+        },
+    )
+    with pytest.raises(R201Error, match="row version conflict"):
+        service.resolve_deviation(
+            exp["id"],
+            deviation["id"],
+            {
+                **_event("versioned-resolve", 1),
+                "reviewed_by": "李四",
+                "impact_assessment": "不影响",
+                "disposition": "continue",
+                "row_version": exp["row_version"] + 1,
+            },
+        )
+
+
+def test_pending_review_blocks_deviations_and_device_changes():
+    service, repo = _service()
+    exp = service.create_experiment(CREATE)
+    device_id = repo.upsert_device("stirrer-1", "stirrer")
+    repo._conn.execute(
+        "UPDATE experiment SET status='pending_review' WHERE id=?",
+        (exp["id"],),
+    )
+    repo._conn.commit()
+
+    with pytest.raises(R201Error, match="cannot open a deviation"):
+        service.open_deviation(
+            exp["id"],
+            {
+                **_event("late-deviation", 1),
+                "description": "复核中新增",
+                "opened_by": "张三",
+            },
+        )
+    with pytest.raises(R201Error, match="cannot change devices"):
+        service.select_process_device(
+            exp["id"],
+            {
+                **_event("late-device", 1),
+                "device_id": device_id,
+                "device_type": "stirrer",
+            },
+        )
+
+
+def test_release_rechecks_that_all_deviations_are_closed():
+    service, repo = _service()
+    exp = service.create_experiment(CREATE)
+    service.open_deviation(
+        exp["id"],
+        {
+            **_event("review-open-deviation", 1),
+            "description": "发布前仍未闭环",
+            "opened_by": "张三",
+        },
+    )
+    repo._conn.execute(
+        """UPDATE experiment
+           SET status='pending_review', current_step_code='R201-90'
+           WHERE id=?""",
+        (exp["id"],),
+    )
+    repo._conn.commit()
+
+    with pytest.raises(R201Error, match="不能发布"):
+        service.review(
+            exp["id"],
+            exp["row_version"],
+            action="release",
+            reviewer="李四",
+            client_event_id="blocked-release",
+            disposition="合格",
+        )
 
 
 def test_deviation_rework_supersedes_steps_and_increments_attempt():

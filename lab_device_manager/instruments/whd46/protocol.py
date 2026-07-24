@@ -23,21 +23,18 @@ def bytes_to_registers(raw: bytes) -> list[int]:
 
 
 def decode_channels(raw: bytes) -> list[dict[str, float]]:
-    """解码三通道温湿度数据，缺失寄存器按 0 保持旧行为。"""
+    """解码三通道温湿度数据；短帧必须拒绝，不能伪造 0 值。"""
+    expected_bytes = REG_COUNT * 2
+    if len(raw) != expected_bytes:
+        raise ValueError(
+            f"WHD46-33 数据长度错误：收到 {len(raw)} 字节，应为 {expected_bytes} 字节"
+        )
     registers = bytes_to_registers(raw)
     channels = []
     for index in range(CHANNEL_COUNT):
         register_index = index * 2
-        temp_raw = (
-            registers[register_index]
-            if register_index < len(registers)
-            else 0
-        )
-        humid_raw = (
-            registers[register_index + 1]
-            if register_index + 1 < len(registers)
-            else 0
-        )
+        temp_raw = registers[register_index]
+        humid_raw = registers[register_index + 1]
         channels.append(
             {
                 "temp": raw_to_value(temp_raw),

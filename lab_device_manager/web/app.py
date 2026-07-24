@@ -1,5 +1,6 @@
 from __future__ import annotations
 import csv
+import hmac
 import io
 import json as _json
 import time
@@ -827,7 +828,11 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
             return jsonify(
                 {"ok": False, "error": "operator name is required"}
             ), 400
-        if login_password and body.get("password") != login_password:
+        supplied_password = str(body.get("password") or "")
+        if login_password and not hmac.compare_digest(
+            supplied_password,
+            login_password,
+        ):
             return jsonify(
                 {"ok": False, "error": "invalid password"}
             ), 401
@@ -1510,17 +1515,33 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
 
     @app.get("/api/runs/export.xlsx")
     def api_runs_export_xlsx():
+        def _int_param(key, default, min_val=0, max_val=None):
+            try:
+                value = int(request.args.get(key, default))
+            except (TypeError, ValueError):
+                abort(400, description=f"{key} must be an integer")
+            if value < min_val or (
+                max_val is not None and value > max_val
+            ):
+                abort(400, description=f"{key} out of range")
+            return value
+
         def _int_or_none(key):
             v = request.args.get(key)
-            return int(v) if v is not None else None
+            if v is None:
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                abort(400, description=f"{key} must be an integer")
         def _bool_or_none(key):
             v = request.args.get(key)
             if v is None:
                 return None
             return v.lower() in ("1", "true", "yes")
         runs = repo.list_runs(
-            limit=int(request.args.get("limit", 100000)),
-            offset=int(request.args.get("offset", 0)),
+            limit=_int_param("limit", 100000, min_val=1, max_val=100000),
+            offset=_int_param("offset", 0),
             device_id=_int_or_none("device_id"),
             operator=request.args.get("operator"),
             project_tag=request.args.get("project_tag"),
@@ -1589,6 +1610,8 @@ def create_app(engine, repo, secret_key: str = "", login_password: str = ""):
 
     @app.post("/api/runs/<int:run_id>/tag")
     def api_tag(run_id):
+        if repo.get_run(run_id) is None:
+            return jsonify({"error": "run not found"}), 404
         body = request.get_json(silent=True) or {}
         repo.tag_run(run_id, body.get("operator", ""), body.get("project_tag", ""),
                      body.get("experiment_tag", ""), body.get("remark", ""))

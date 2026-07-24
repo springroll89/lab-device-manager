@@ -1,4 +1,9 @@
-from lab_device_manager.instruments.viscometer import ViscometerAdapter, HEADER, TRAILER
+from lab_device_manager.instruments.viscometer import (
+    ViscometerAdapter,
+    HEADER,
+    MAX_BUFFER_BYTES,
+    TRAILER,
+)
 
 
 def _frame(viscosity, temp, shear_rate, shear_stress, torque_pct):
@@ -47,3 +52,12 @@ def test_read_status_offline_when_no_frame():
 def test_read_status_offline_when_silent():
     s = ViscometerAdapter(FakeTransport([]), read_timeout=0.05).read_status()
     assert s.state == "offline"
+
+
+def test_noise_buffer_is_bounded_when_no_complete_frame():
+    adapter = ViscometerAdapter(
+        FakeTransport([b"\x01" * (MAX_BUFFER_BYTES + 100)]),
+        read_timeout=0.05,
+    )
+    assert adapter.read_status().state == "offline"
+    assert len(adapter._buffer) <= MAX_BUFFER_BYTES

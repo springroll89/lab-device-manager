@@ -7,6 +7,7 @@ import io
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -15,6 +16,41 @@ from lab_device_manager.instruments.whd46 import (
     enum_serial_ports,
     probe_port,
 )
+
+
+def _storage_roots() -> list[Path]:
+    candidates = [
+        Path.cwd(),
+        Path.home() / "Desktop",
+        Path.home() / "Documents",
+        Path.home() / "Downloads",
+    ]
+    volumes = Path("/Volumes")
+    if volumes.is_dir():
+        candidates.append(volumes)
+    roots = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in roots and resolved.exists():
+            roots.append(resolved)
+    return roots
+
+
+def _safe_storage_directory(path: str, create: bool = False) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    resolved = candidate.resolve(strict=False)
+    if not any(
+        resolved == root or root in resolved.parents
+        for root in _storage_roots()
+    ):
+        raise ValueError("path is outside allowed storage locations")
+    if create:
+        resolved.mkdir(parents=True, exist_ok=True)
+    if not resolved.is_dir():
+        raise ValueError("invalid directory")
+    return resolved
 
 
 def _channels(metrics: dict) -> list[dict]:
@@ -146,50 +182,42 @@ def create_whd46_blueprint(engine, repo) -> Blueprint:
         path = request.args.get("path", "")
         try:
             if not path:
-                if os.name == "nt":
-                    drives = [
-                        f"{drive}:\\"
-                        for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                        if os.path.exists(f"{drive}:\\")
-                    ]
-                    return jsonify(
-                        {
-                            "current": "",
-                            "parent": "",
-                            "directories": drives,
-                        }
-                    )
                 return jsonify(
                     {
-                        "current": "/",
+                        "current": "",
                         "parent": "",
                         "directories": [
-                            name
-                            for name in os.listdir("/")
-                            if os.path.isdir(os.path.join("/", name))
+                            str(root) for root in _storage_roots()
                         ],
                     }
                 )
-            if not os.path.isdir(path):
-                return jsonify({"error": "invalid path"}), 400
-            parent = os.path.dirname(path)
-            if parent == path:
+            current = _safe_storage_directory(path)
+            roots = _storage_roots()
+            parent_path = current.parent
+            if current in roots:
                 parent = ""
+            else:
+                try:
+                    parent = str(_safe_storage_directory(str(parent_path)))
+                except ValueError:
+                    parent = ""
             try:
                 directories = sorted(
-                    name
-                    for name in os.listdir(path)
-                    if os.path.isdir(os.path.join(path, name))
+                    child.name
+                    for child in current.iterdir()
+                    if child.is_dir() and not child.name.startswith(".")
                 )
             except PermissionError:
                 directories = []
             return jsonify(
                 {
-                    "current": path,
+                    "current": str(current),
                     "parent": parent,
                     "directories": directories,
                 }
             )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
 
@@ -310,8 +338,8 @@ def create_whd46_blueprint(engine, repo) -> Blueprint:
         save_path = request.args.get("save_path", "")
         if save_path:
             try:
-                os.makedirs(save_path, exist_ok=True)
-                full_path = os.path.join(save_path, filename)
+                directory = _safe_storage_directory(save_path, create=True)
+                full_path = directory / filename
                 with open(
                     full_path,
                     "w",
@@ -324,7 +352,7 @@ def create_whd46_blueprint(engine, repo) -> Blueprint:
                         "ok": True,
                         "message": f"CSV文件已保存到: {full_path}",
                         "filename": filename,
-                        "path": full_path,
+                        "path": str(full_path),
                     }
                 )
             except Exception as exc:
@@ -351,10 +379,13 @@ def create_whd46_blueprint(engine, repo) -> Blueprint:
         body = request.get_json(silent=True) or {}
         save_path = body.get("save_path", "data")
         data = body.get("data", {})
-        os.makedirs(save_path, exist_ok=True)
+        try:
+            directory = _safe_storage_directory(save_path, create=True)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         filename = f"WHD46_data_{datetime.now():%Y%m%d}.csv"
-        full_path = os.path.join(save_path, filename)
-        file_exists = os.path.exists(full_path)
+        full_path = directory / filename
+        file_exists = full_path.exists()
         with open(
             full_path,
             "a",

@@ -1,8 +1,11 @@
 from __future__ import annotations
+import logging
 import threading
 import time
 from typing import Callable, Optional
 from lab_device_manager.instruments.base import StatusSnapshot, offline_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 class Sampler:
@@ -43,6 +46,9 @@ class Sampler:
             try:
                 self.on_sample(snap)
             except Exception:
-                pass
+                logger.exception(
+                    "sample callback failed for device %s",
+                    self._device_id or "unknown",
+                )
             elapsed = time.monotonic() - t0
             self._stop.wait(max(0.0, self.interval_s - elapsed))

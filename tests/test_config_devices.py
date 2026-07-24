@@ -29,3 +29,17 @@ def test_rejects_devices_dict(tmp_path):
     p.write_text('[devices]\n', encoding="utf-8")  # [devices] (dict) instead of [[devices]]
     with pytest.raises(ValueError, match="\\[\\[devices\\]\\]"):
         load_config(str(p))
+
+
+def test_default_load_prefers_untracked_local_config(tmp_path, monkeypatch):
+    (tmp_path / "config.toml").write_text(
+        'web_port = 7800\nsecret_key = "test"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "config.local.toml").write_text(
+        'web_port = 7900\nsecret_key = "test"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert load_config().web_port == 7900
