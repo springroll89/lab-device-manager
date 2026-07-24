@@ -55,9 +55,6 @@
     );
     panel.appendChild(profile);
 
-    addMenuLink(panel, "/experiments", "实验执行");
-    addMenuLink(panel, "/inventory", "物品与库存");
-    addMenuLink(panel, "/", "设备看板");
     addMenuLink(panel, "/change-password", "修改密码");
     if (session.can_manage_accounts) {
       addMenuLink(panel, "/accounts", "账号管理");

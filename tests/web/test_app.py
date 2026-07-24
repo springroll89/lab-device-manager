@@ -420,6 +420,8 @@ def test_authenticated_pages_share_account_menu_entry(tmp_path):
     menu_script = client.get("/static/account-menu.js")
     assert menu_script.status_code == 200
     assert b'addMenuLink(panel, "/change-password", "' in menu_script.data
+    assert b'addMenuLink(panel, "/experiments", "' not in menu_script.data
+    assert b'addMenuLink(panel, "/inventory", "' not in menu_script.data
     assert b"session.can_manage_accounts" in menu_script.data
     assert b'addMenuLink(panel, "/accounts", "' in menu_script.data
 
@@ -429,12 +431,48 @@ def test_authenticated_pages_share_account_menu_entry(tmp_path):
         "run.html",
         "sensor.html",
         "experiment.html",
+        "materials.html",
+        "measurement-station.html",
         "accounts.html",
     ):
         response = client.get(f"/static/{page}")
         assert response.status_code == 200
         assert b"data-account-menu" in response.data
         assert b"/static/account-menu.js" in response.data
+
+
+def test_authenticated_pages_share_fixed_primary_navigation(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    navigation = client.get("/static/primary-navigation.js")
+    assert navigation.status_code == 200
+    labels = ("设备看板", "实验执行", "物品与库存", "粘度工位")
+    positions = [navigation.data.index(label.encode()) for label in labels]
+    assert positions == sorted(positions)
+    assert b'link.setAttribute("aria-current", "page")' in navigation.data
+
+    for page in (
+        "index.html",
+        "device.html",
+        "run.html",
+        "sensor.html",
+        "experiment.html",
+        "materials.html",
+        "measurement-station.html",
+        "accounts.html",
+    ):
+        response = client.get(f"/static/{page}")
+        assert response.status_code == 200
+        assert b"data-primary-nav" in response.data
+        assert b"/static/primary-navigation.js" in response.data
+
+    experiment = client.get("/static/experiment.html").data
+    header = experiment.split(b"</header>", 1)[0]
+    assert b"cameraScanButton" not in header
+    assert "纸电并行验证".encode() not in header
+    assert b"cameraScanButton" in experiment
+    assert "纸电并行验证".encode() in experiment
 
 
 def _authenticated_app(tmp_path):
