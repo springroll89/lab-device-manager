@@ -3,93 +3,145 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>原材料管理</title>
+  <title>物品与库存</title>
   <link rel="stylesheet" href="/static/puricore-theme.css">
   <style>
-    body{margin:0;background:#081116;color:#ecf5f4;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
-    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;border-bottom:1px solid #24404b}
-    header div{display:flex;align-items:center;gap:10px}a,button{min-height:44px;padding:10px 16px;border-radius:11px;border:1px solid #31505c;background:#122731;color:#eef;text-decoration:none;font:inherit;cursor:pointer}
-    button.primary{background:#69dec0;color:#071712;border:0;font-weight:700}
-    main{width:min(1180px,100%);margin:auto;padding:28px 18px}.layout{display:grid;grid-template-columns:minmax(300px,420px) 1fr;gap:18px}
-    .panel{padding:20px;border:1px solid #24404b;border-radius:16px;background:#102029}.panel h2{margin-top:0}
-    form{display:grid;gap:13px}.field{display:grid;gap:6px}.field label,.muted{color:#8ca7aa;font-size:13px}
-    input,select{width:100%;padding:12px;border-radius:10px;border:1px solid #31505c;background:#081116;color:#fff;font:inherit}
-    .inline{display:flex;gap:8px}.inline input{flex:1}.status{min-height:22px;color:#69dec0}.status.error{color:#ff8f8f}
-    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #24404b;white-space:nowrap}th{color:#8ca7aa}
-    .available{color:#69dec0}.empty,.expired,.quarantined,.disposed{color:#ffb267}
-    dialog{width:min(680px,calc(100% - 24px));border:1px solid #31505c;border-radius:18px;background:#102029;color:#fff;padding:20px}
-    video{width:100%;min-height:280px;background:#020709;border-radius:14px;object-fit:cover}
-    @media(max-width:850px){.layout{grid-template-columns:1fr}header{padding:14px 16px;align-items:flex-start}header>div{flex-wrap:wrap;justify-content:flex-end}}
+    body{margin:0}.inventory-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 28px;border-bottom:1px solid var(--pc-line-soft);background:#070d12;position:sticky;top:0;z-index:20}
+    .inventory-header nav,.toolbar,.dialog-actions,.inline{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.inventory-header a,.inventory-header button,.btn{min-height:42px;padding:9px 14px;border:1px solid var(--pc-line);border-radius:10px;background:var(--pc-surface-2);color:var(--pc-text);text-decoration:none;cursor:pointer}
+    .btn.primary{border-color:transparent;background:var(--pc-accent);color:#06130f;font-weight:750}.btn.danger{border-color:#714040;color:#ffaaaa}.btn.small{min-height:34px;padding:6px 10px;font-size:12px}
+    main{width:min(1320px,100%);margin:auto;padding:24px 18px 70px}.eyebrow{margin:0 0 4px;color:var(--pc-accent);font-size:11px;letter-spacing:.16em}.page-title{margin:0;font-size:clamp(24px,4vw,40px)}
+    .summary-grid{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));gap:10px;margin:22px 0}.summary-card{padding:15px;border:1px solid var(--pc-line-soft);border-radius:13px;background:var(--pc-surface)}.summary-card span{display:block;color:var(--pc-muted);font-size:12px}.summary-card strong{display:block;margin-top:6px;font-size:25px}.summary-card.warn strong{color:#ffc66d}.summary-card.danger strong{color:#ff9e9e}
+    .panel{margin-top:16px;padding:18px;border:1px solid var(--pc-line-soft);border-radius:15px;background:var(--pc-surface)}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.panel h2{margin:0;font-size:17px}.muted{color:var(--pc-muted);font-size:12px}.status{min-height:22px;color:var(--pc-accent)}.status.error{color:#ff9e9e}
+    .filters{display:grid;grid-template-columns:minmax(190px,2fr) repeat(4,minmax(125px,1fr));gap:9px}.field{display:grid;gap:6px}.field label{color:var(--pc-muted);font-size:12px}input,select,textarea{width:100%;min-height:42px;padding:9px 11px;border:1px solid var(--pc-line);border-radius:9px;background:#070e13;color:var(--pc-text)}textarea{min-height:78px;resize:vertical}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:11px 9px;border-bottom:1px solid var(--pc-line-soft);text-align:left;white-space:nowrap}th{color:var(--pc-muted);font-size:11px}tr[data-item-id]{cursor:pointer}tr[data-item-id]:hover{background:var(--pc-surface-hover)}.badge{display:inline-flex;padding:2px 8px;border:1px solid var(--pc-line);border-radius:999px;font-size:11px}.badge.controlled{border-color:#704047;background:#2b1419;color:#ffaaaa}.badge.available{color:var(--pc-accent)}.badge.empty,.badge.expired,.badge.quarantined,.badge.disposed{color:#ffc66d}
+    dialog{width:min(760px,calc(100% - 24px));max-height:90vh;overflow:auto;padding:20px;border:1px solid var(--pc-line);border-radius:16px;background:#0c151c;color:var(--pc-text)}dialog::backdrop{background:rgba(0,0,0,.72)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.dialog-head h2{margin:0}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.full{grid-column:1/-1}.hazards{display:flex;gap:8px;flex-wrap:wrap}.hazards label{display:flex;gap:5px;align-items:center;padding:6px 9px;border:1px solid var(--pc-line);border-radius:8px}.hazards input{width:auto;min-height:auto}
+    .detail-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.detail-value{padding:10px;border:1px solid var(--pc-line-soft);border-radius:9px}.detail-value span{display:block;color:var(--pc-muted);font-size:11px}.alert-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.alert-group{padding:12px;border:1px solid var(--pc-line-soft);border-radius:10px;background:#081117}.alert-group h3{margin:0 0 8px;font-size:14px}.alert-group ul{margin:0;padding-left:18px;color:var(--pc-muted);font-size:12px}.movement{padding:10px 0;border-bottom:1px solid var(--pc-line-soft)}video{width:100%;min-height:280px;border-radius:12px;background:#020609;object-fit:cover}
+    @media(max-width:980px){.summary-grid{grid-template-columns:repeat(3,1fr)}.filters,.alert-grid{grid-template-columns:1fr 1fr}.inventory-header{padding:12px 14px;align-items:flex-start}.inventory-header nav{justify-content:flex-end}}
+    @media(max-width:600px){.summary-grid{grid-template-columns:repeat(2,1fr)}.filters,.form-grid,.detail-grid,.alert-grid{grid-template-columns:1fr}.full{grid-column:auto}.inventory-header strong{display:none}.inventory-header nav{width:100%}.inventory-header nav>a{display:none}main{padding:18px 12px 80px}.toolbar .btn{flex:1}}
   </style>
 </head>
 <body>
-  <header>
-    <strong>原材料管理</strong>
-    <div>
-      <a href="/experiments">实验工作台</a>
+  <header class="inventory-header">
+    <strong>Puricore · 物品与库存</strong>
+    <nav>
+      <a href="/experiments">实验执行</a>
+      <a href="/measurement-station">粘度工位</a>
       <a href="/">设备看板</a>
       <span data-account-menu></span>
-    </div>
+    </nav>
   </header>
   <main>
-    <div class="layout">
-      <section class="panel">
-        <h2>登记一瓶原材料</h2>
-        <p class="muted">先扫瓶身原条码，再补材料名称、批号和余量。保存后打印耐久标签贴在瓶身。</p>
-        <form id="materialForm">
-          <div class="field">
-            <label for="externalBarcode">供应商条码或二维码</label>
-            <div class="inline">
-              <input id="externalBarcode" placeholder="可扫描，也可留空">
-              <button id="scanSupplierCode" type="button">扫码</button>
-            </div>
-          </div>
-          <div class="field"><label for="containerCode">系统容器编号</label><input id="containerCode" required></div>
-          <div class="field"><label for="materialName">材料名称</label><input id="materialName" required placeholder="例如 TEOS、乙醇"></div>
-          <div class="field"><label for="supplier">供应商</label><input id="supplier" placeholder="可选"></div>
-          <div class="field"><label for="supplierLot">供应商批号</label><input id="supplierLot" placeholder="建议填写"></div>
-          <div class="field"><label for="expiresOn">有效期</label><input id="expiresOn" type="date"></div>
-          <div class="inline">
-            <div class="field" style="flex:1"><label for="quantity">当前余量</label><input id="quantity" type="number" min="0" step="any"></div>
-            <div class="field" style="width:120px"><label for="unit">单位</label><select id="unit"><option>mL</option><option>g</option><option>kg</option><option>L</option></select></div>
-          </div>
-          <div id="formStatus" class="status" role="status"></div>
-          <button class="primary" type="submit">保存并打印标签</button>
-        </form>
-      </section>
-      <section class="panel">
-        <div class="inline" style="align-items:center;justify-content:space-between">
-          <div><h2 style="margin-bottom:4px">已登记原材料</h2><span id="inventorySummary" class="muted">正在读取…</span></div>
-          <button id="refreshMaterials" type="button">刷新</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>系统编号</th><th>材料</th><th>供应商批号</th><th>有效期</th><th>余量</th><th>状态</th><th></th></tr></thead>
-            <tbody id="materialRows"></tbody>
-          </table>
-        </div>
-      </section>
+    <p class="eyebrow">INVENTORY</p>
+    <h1 class="page-title">物品与库存</h1>
+    <p class="muted">化学品、耗材和办公用品使用同一套编号、库存流水和扫码入口。</p>
+
+    <section id="inventorySummaryGrid" class="summary-grid" aria-label="库存概览"></section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>需要关注</h2><span id="inventoryAdjustStatus" class="muted"></span></div>
+      <div id="inventoryAlertDetails" class="alert-grid"></div>
+    </section>
+
+    <div class="toolbar">
+      <button id="openInventoryScanner" class="btn primary" type="button">扫码</button>
+      <button id="openItemForm" class="btn primary" type="button">新增物品</button>
+      <a class="btn" href="/api/inventory/export.csv">导出 CSV</a>
+      <a class="btn" href="/api/inventory/disposal.csv">导出待处置清单</a>
+      <button id="refreshInventory" class="btn" type="button">刷新</button>
+      <span id="inventoryStatus" class="status" role="status"></span>
     </div>
+
+    <section class="panel">
+      <div class="panel-head"><h2>库存列表</h2><span id="inventoryCount" class="muted">正在读取…</span></div>
+      <form id="inventoryFilters" class="filters">
+        <input id="inventorySearch" type="search" placeholder="搜索名称、编号、CAS、位置或批号">
+        <select id="inventoryCategory"><option value="">全部类别</option><option value="chemical">化学品</option><option value="consumable">耗材</option><option value="office">办公用品</option></select>
+        <select id="inventoryItemStatus"><option value="">全部状态</option><option value="available">可用</option><option value="empty">已用完</option><option value="quarantined">待处置/隔离</option><option value="expired">已过期</option><option value="disposed">已处置</option></select>
+        <input id="inventoryLocation" placeholder="按位置筛选">
+        <select id="inventoryControlled"><option value="">全部管制状态</option><option value="true">管制类</option><option value="false">非管制类</option></select>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>编号</th><th>名称</th><th>类别</th><th>库存</th><th>位置</th><th>批号/有效期</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="inventoryRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="inventoryAudit" class="panel">
+      <div class="panel-head"><h2>库存流水</h2><span id="inventoryAuditCount" class="muted">所有数量变化均保留操作账号和时间</span></div>
+      <form id="inventoryAuditFilters" class="filters" style="grid-template-columns:1fr 1fr 1fr auto auto;margin-bottom:10px">
+        <select id="inventoryAuditAction"><option value="">全部操作</option><option value="registered">登记</option><option value="received">入库</option><option value="issued">领用</option><option value="experiment_used">实验领用</option><option value="adjusted">盘点</option><option value="quarantined">隔离</option><option value="disposed">处置</option><option value="imported">历史迁移</option></select>
+        <input id="inventoryAuditFrom" type="date" aria-label="流水开始日期">
+        <input id="inventoryAuditTo" type="date" aria-label="流水结束日期">
+        <button id="refreshInventoryAudit" class="btn" type="button">查询</button>
+        <a id="exportInventoryAudit" class="btn" href="/api/inventory/movements.csv">导出流水</a>
+      </form>
+      <div id="inventoryAuditRows"></div>
+      <div class="dialog-actions" style="margin-top:12px">
+        <button id="inventoryAuditPrevious" class="btn" type="button">上一页</button>
+        <span id="inventoryAuditPage" class="muted">1 / 1</span>
+        <button id="inventoryAuditNext" class="btn" type="button">下一页</button>
+      </div>
+    </section>
   </main>
+
+  <dialog id="itemFormDialog">
+    <div class="dialog-head"><h2 id="itemFormTitle">新增物品</h2><button class="btn small" data-close="itemFormDialog" type="button">关闭</button></div>
+    <form id="inventoryItemForm" class="form-grid">
+      <input id="itemId" type="hidden">
+      <div class="field"><label for="itemCategory">类别</label><select id="itemCategory" required><option value="chemical">化学品</option><option value="consumable">耗材</option><option value="office">办公用品</option></select></div>
+      <div class="field"><label for="itemName">名称</label><input id="itemName" required></div>
+      <div class="field"><label for="itemQuantity">初始数量</label><input id="itemQuantity" type="number" min="0" step="any" required></div>
+      <div class="field"><label for="itemUnit">单位</label><input id="itemUnit" required placeholder="mL、g、瓶、盒"></div>
+      <div class="field"><label for="itemLocation">存放位置</label><input id="itemLocation"></div>
+      <div class="field"><label for="itemOwner">负责人</label><input id="itemOwner"></div>
+      <div class="field"><label for="itemMin">库存下限</label><input id="itemMin" type="number" min="0" step="any"></div>
+      <div class="field"><label for="itemMax">库存上限</label><input id="itemMax" type="number" min="0" step="any"></div>
+      <div class="field"><label for="itemExternalBarcode">供应商条码</label><input id="itemExternalBarcode"></div>
+      <div class="field"><label for="itemLot">供应商批号</label><input id="itemLot"></div>
+      <label class="full inline"><input id="itemControlled" type="checkbox" style="width:auto;min-height:auto">管制类物品（领用自动记录账号）</label>
+      <section id="chemicalFields" class="full form-grid">
+        <div class="field"><label for="itemCas">CAS 号</label><div class="inline"><input id="itemCas"><button id="lookupCas" class="btn small" type="button">自动识别</button></div></div>
+        <div class="field"><label for="itemSpec">规格/包装</label><input id="itemSpec"></div>
+        <div class="field"><label for="itemSds">SDS 链接</label><input id="itemSds" type="url"></div>
+        <div class="field"><label for="itemExpiry">有效期</label><input id="itemExpiry" type="date"></div>
+        <div class="field"><label for="itemOpened">开封日期</label><input id="itemOpened" type="date"></div>
+        <div class="field"><label for="itemPreparedBy">配制人</label><input id="itemPreparedBy"></div>
+        <div class="field"><label for="itemPreparedDate">配制/分装日期</label><input id="itemPreparedDate" type="date"></div>
+        <div class="field full"><span class="muted">危险性</span><div id="itemHazards" class="hazards"></div></div>
+      </section>
+      <div class="field full"><label for="itemNote">备注</label><textarea id="itemNote"></textarea></div>
+      <div id="itemFormStatus" class="status full"></div>
+      <div class="dialog-actions full"><button class="btn primary" type="submit">保存</button><button class="btn" data-close="itemFormDialog" type="button">取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="inventoryDetailDialog">
+    <div class="dialog-head"><h2 id="inventoryDetailTitle">物品详情</h2><button class="btn small" data-close="inventoryDetailDialog" type="button">关闭</button></div>
+    <div id="inventoryDetailBody"></div>
+  </dialog>
+
+  <dialog id="inventoryOperationDialog">
+    <div class="dialog-head"><h2 id="inventoryOperationTitle">库存操作</h2><button class="btn small" data-close="inventoryOperationDialog" type="button">关闭</button></div>
+    <form id="inventoryOperationForm">
+      <input id="operationItemId" type="hidden"><input id="operationAction" type="hidden">
+      <div id="operationQuantityField" class="field"><label id="operationQuantityLabel" for="operationQuantity">数量</label><input id="operationQuantity" type="number" min="0" step="any"></div>
+      <div class="field"><label for="operationNote">备注</label><textarea id="operationNote"></textarea></div>
+      <div id="operationStatus" class="status"></div>
+      <div class="dialog-actions"><button class="btn primary" type="submit">确认</button><button class="btn" data-close="inventoryOperationDialog" type="button">取消</button></div>
+    </form>
+  </dialog>
+
   <dialog id="cameraScanDialog">
-    <h2>扫描瓶身条码</h2>
+    <div class="dialog-head"><h2>扫描物品标签</h2><button id="cameraScanClose" class="btn small" type="button">关闭</button></div>
     <p id="cameraScanStatus" class="muted"></p>
     <video id="cameraScanVideo" playsinline muted></video>
-    <input id="cameraScanManual" placeholder="扫码枪或手工输入">
-    <div class="inline" style="margin-top:12px">
-      <button id="cameraScanManualSubmit" class="primary" type="button">确认编号</button>
-      <button id="cameraScanClose" type="button">关闭</button>
-    </div>
+    <div class="inline"><input id="cameraScanManual" placeholder="扫码枪或手工输入"><button id="cameraScanManualSubmit" class="btn primary" type="button">确认</button></div>
   </dialog>
-  <dialog id="materialDetailDialog">
-    <div class="inline" style="align-items:center;justify-content:space-between">
-      <h2 id="materialDetailTitle">原材料记录</h2>
-      <button id="materialDetailClose" type="button">关闭</button>
-    </div>
-    <div id="materialDetailBody"></div>
-  </dialog>
+
   <script src="/static/account-menu.js"></script>
   <script src="/static/scanner.js"></script>
-  <script src="/static/materials.js"></script>
+  <script src="/static/inventory.js"></script>
 </body>
 </html>

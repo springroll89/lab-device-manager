@@ -424,19 +424,111 @@ def test_scanned_material_container_is_decremented_and_audited():
     updated = repo.experiments.get_material_container_by_code(
         "RM-TEOS-0001"
     )
-    events = repo.experiments.list_material_container_events(
-        container["id"]
-    )
+    movements = repo.inventory.list_movements(item_id=container["id"])
 
     assert updated["quantity_remaining"] == 12.5
     assert updated["opened_on"] is not None
-    assert [row["event_type"] for row in events] == [
+    assert {row["action"] for row in movements} == {
         "registered",
-        "opened",
-        "used",
-    ]
-    assert events[-1]["experiment_id"] == experiment["id"]
-    assert events[-1]["quantity"] == 7.5
+        "experiment_used",
+    }
+    usage = next(
+        row for row in movements if row["action"] == "experiment_used"
+    )
+    assert usage["experiment_id"] == experiment["id"]
+    assert usage["step_instance_id"] is not None
+    assert usage["delta"] == -7.5
+    assert usage["quantity_after"] == 12.5
+
+    retry = service.complete_step(
+        experiment["id"],
+        "R201-03",
+        started["experiment"]["row_version"],
+        {
+            "materials": [
+                {
+                    "name": "TEOS",
+                    "lot": "SUP-01",
+                    "actual": 7.5,
+                    "unit": "mL",
+                    "material_container_id": container["id"],
+                    "container_code": container["container_code"],
+                }
+            ]
+        },
+        _event("complete-material", 3),
+    )
+
+    assert retry["experiment"]["current_step_code"] == "R201-04"
+    assert repo.inventory.get_item(container["id"])["quantity_remaining"] == 12.5
+    assert len(repo.inventory.list_movements(item_id=container["id"])) == 2
+
+
+def test_material_confirmation_rolls_back_when_inventory_is_insufficient():
+    service, repo = _service()
+    experiment = service.create_experiment(CREATE)
+    container = service.create_material_container(
+        {
+            "container_code": "RM-TEOS-LOW",
+            "material_name": "TEOS",
+            "supplier_lot": "LOW-01",
+            "quantity_remaining": 2,
+            "unit": "mL",
+            "created_by": "张三",
+            "client_event_id": "register-material-low",
+        }
+    )
+    for index, step in enumerate(("R201-01", "R201-02"), start=1):
+        current = service.get_experiment(experiment["id"])["experiment"]
+        started = service.start_step(
+            experiment["id"],
+            step,
+            current["row_version"],
+            _event("start-before-low", index),
+        )
+        service.complete_step(
+            experiment["id"],
+            step,
+            started["experiment"]["row_version"],
+            VALID_RESULTS[step],
+            _event("complete-before-low", index),
+        )
+    current = service.get_experiment(experiment["id"])["experiment"]
+    started = service.start_step(
+        experiment["id"],
+        "R201-03",
+        current["row_version"],
+        _event("start-low-material", 3),
+    )
+
+    with pytest.raises(R201Error, match="余量不足"):
+        service.complete_step(
+            experiment["id"],
+            "R201-03",
+            started["experiment"]["row_version"],
+            {
+                "materials": [
+                    {
+                        "name": "TEOS",
+                        "lot": "LOW-01",
+                        "actual": 3,
+                        "unit": "mL",
+                        "material_container_id": container["id"],
+                        "container_code": container["container_code"],
+                    }
+                ]
+            },
+            _event("complete-low-material", 3),
+        )
+
+    detail = service.get_experiment(experiment["id"])
+    assert detail["experiment"]["current_step_code"] == "R201-03"
+    assert detail["materials"] == []
+    assert repo.inventory.get_item(container["id"])["quantity_remaining"] == 2
+    assert [
+        row["action"]
+        for row in repo.inventory.list_movements(item_id=container["id"])
+    ] == ["registered"]
 
 
 def test_expired_material_container_cannot_be_registered():

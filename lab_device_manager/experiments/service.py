@@ -10,6 +10,8 @@ import uuid
 from datetime import date, datetime
 from typing import Callable, Optional
 
+from lab_device_manager.inventory.service import InventoryError, InventoryService
+
 
 MAIN_STEPS = (
     "R201-01",
@@ -138,6 +140,9 @@ class R201Service:
         self.repo = repo
         self.store = repo.experiments
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self.inventory = InventoryService(
+            repo.inventory, clock_ms=self.clock_ms
+        )
 
     def create_experiment(self, data: dict) -> dict:
         client_event_id = data.get("client_event_id")
@@ -281,43 +286,70 @@ class R201Service:
             if expiry_date < date.today():
                 raise R201Error("原材料有效期已过，不能登记为可用容器")
         payload = {
-            **data,
-            "container_code": container_code,
+            "code": container_code,
             "external_barcode": (
                 str(data.get("external_barcode") or "").strip().upper()
                 or None
             ),
-            "material_name": material_name,
-            "expires_on": expires_on,
-            "quantity_remaining": quantity,
+            "name": material_name,
+            "category": "chemical",
+            "supplier": data.get("supplier"),
+            "lot_no": data.get("supplier_lot") or data.get("internal_lot"),
+            "expiry_date": expires_on,
+            "opened_date": data.get("opened_on"),
+            "quantity": quantity or 0,
             "unit": str(data.get("unit") or "").strip() or None,
-            "status": "available",
-            "created_at_ms": self.clock_ms(),
+            "location": data.get("location"),
+            "owner": data.get("owner"),
+            "note": data.get("note"),
+            "cas_no": data.get("cas_no"),
+            "spec": data.get("spec"),
+            "hazards": data.get("hazards") or [],
+            "sds_url": data.get("sds_url"),
+            "is_controlled": bool(data.get("is_controlled")),
+            "created_by": data["created_by"],
+            "created_by_user_id": data.get("created_by_user_id"),
+            "client_event_id": data["client_event_id"],
         }
         try:
-            return self.store.create_material_container(payload)
-        except sqlite3.IntegrityError as exc:
-            raise R201Error(
-                "原材料容器编号或供应商条码已存在", 409
-            ) from exc
+            return self.inventory.create_item(payload)
+        except InventoryError as exc:
+            raise R201Error(str(exc), exc.status_code) from exc
 
     def list_material_containers(self) -> list[dict]:
         self.store.expire_material_containers(
             date.today().isoformat(), self.clock_ms()
         )
-        return self.store.list_material_containers()
+        return self.inventory.list_items({"category": "chemical"})
 
     def resolve_scan_code(self, code: str) -> dict:
         normalized = str(code or "").strip()
         if "/scan/" in normalized:
             normalized = normalized.rsplit("/scan/", 1)[1]
+        else:
+            for line in normalized.splitlines():
+                candidate = line.strip()
+                for prefix in (
+                    "编号：",
+                    "编号:",
+                    "实物编号：",
+                    "实物编号:",
+                    "容器编号：",
+                    "容器编号:",
+                    "位置编号：",
+                    "位置编号:",
+                ):
+                    if candidate.startswith(prefix):
+                        normalized = candidate[len(prefix) :].strip()
+                        break
+                else:
+                    continue
+                break
         normalized = normalized.removeprefix("PURICORE:")
         self.store.expire_material_containers(
             date.today().isoformat(), self.clock_ms()
         )
-        material = self.store.get_material_container_by_code(
-            normalized.upper()
-        )
+        material = self.repo.inventory.get_item_by_code(normalized.upper())
         if material is not None:
             return {"kind": "material_container", "material": material}
         return self.lookup_trace_code(normalized)
@@ -840,7 +872,7 @@ class R201Service:
                 event["actor"],
                 event,
             )
-        except (RuntimeError, sqlite3.IntegrityError) as exc:
+        except (RuntimeError, ValueError, sqlite3.IntegrityError) as exc:
             raise R201Error(str(exc), 409) from exc
         return {"experiment": updated, "step": step}
 

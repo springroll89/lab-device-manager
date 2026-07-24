@@ -8,6 +8,8 @@ from contextlib import contextmanager, nullcontext
 from datetime import date, datetime
 from typing import Iterator, Optional
 
+from lab_device_manager.db.inventory_store import InventoryStore
+
 
 def _json(value) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
@@ -32,6 +34,7 @@ class ExperimentStore:
     def __init__(self, connection: sqlite3.Connection, lock: threading.RLock):
         self._conn = connection
         self._lock = lock
+        self.inventory = InventoryStore(connection, lock)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -508,19 +511,30 @@ class ExperimentStore:
     def list_material_container_events(
         self, material_container_id: int
     ) -> list[dict]:
-        with self._lock:
-            rows = self._conn.execute(
-                """SELECT event.*, experiment.batch_id
-                   FROM material_container_event event
-                   LEFT JOIN experiment
-                     ON experiment.id=event.experiment_id
-                   WHERE event.material_container_id=?
-                   ORDER BY event.id""",
-                (material_container_id,),
-            ).fetchall()
+        action_to_event = {
+            "registered": "registered",
+            "received": "received",
+            "issued": "issued",
+            "adjusted": "adjusted",
+            "experiment_used": "used",
+            "opened": "opened",
+            "quarantined": "quarantined",
+            "disposed": "disposed",
+            "imported": "imported",
+        }
+        movements = self.inventory.list_movements(
+            item_id=material_container_id
+        )
         return [
-            _decode_row(row, {"payload_json": "payload"})
-            for row in rows
+            {
+                **movement,
+                "material_container_id": movement["item_id"],
+                "event_type": action_to_event.get(
+                    movement["action"], movement["action"]
+                ),
+                "quantity": abs(movement["delta"]),
+            }
+            for movement in reversed(movements)
         ]
 
     def max_numeric_batch_sequence(self, prefix: str) -> int:
@@ -828,77 +842,24 @@ class ExperimentStore:
                     ),
                 )
                 if container is not None:
-                    if not container["opened_on"]:
-                        opened_on = datetime.fromtimestamp(
-                            effective_at_ms / 1000
-                        ).date().isoformat()
-                        conn.execute(
-                            """UPDATE material_container
-                               SET opened_on=?, updated_at_ms=?
-                               WHERE id=?""",
-                            (
-                                opened_on,
-                                effective_at_ms,
-                                container_id,
+                    self.inventory.record_movement(
+                        container_id,
+                        {
+                            "client_event_id": (
+                                f"{event['client_event_id']}:"
+                                f"material:{material_index}"
                             ),
-                        )
-                        conn.execute(
-                            """INSERT INTO material_container_event(
-                                 client_event_id, material_container_id,
-                                 experiment_id, event_type,
-                                 effective_at_ms, actor, actor_user_id,
-                                 payload_json)
-                               VALUES(?,?,?,'opened',?,?,?,?)""",
-                            (
-                                f"{event['client_event_id']}:open:{material_index}",
-                                container_id,
-                                experiment_id,
-                                effective_at_ms,
-                                actor,
-                                event.get("actor_user_id"),
-                                _json({"step_code": step_code}),
-                            ),
-                        )
-                    new_remaining = (
-                        container["quantity_remaining"]
-                        - material["actual_value"]
-                        if container["quantity_remaining"] is not None
-                        else None
-                    )
-                    conn.execute(
-                        """UPDATE material_container
-                           SET quantity_remaining=?,
-                               status=CASE
-                                 WHEN ? IS NOT NULL AND ? <= 0
-                                 THEN 'empty' ELSE status END,
-                               updated_at_ms=?
-                           WHERE id=?""",
-                        (
-                            new_remaining,
-                            new_remaining,
-                            new_remaining,
-                            effective_at_ms,
-                            container_id,
-                        ),
-                    )
-                    conn.execute(
-                        """INSERT INTO material_container_event(
-                             client_event_id, material_container_id,
-                             experiment_id, event_type, quantity, unit,
-                             effective_at_ms, actor, actor_user_id,
-                             payload_json)
-                           VALUES(?,?,?,'used',?,?,?,?,?,?)""",
-                        (
-                            f"{event['client_event_id']}:material:{material_index}",
-                            container_id,
-                            experiment_id,
-                            material["actual_value"],
-                            material["unit"],
-                            effective_at_ms,
-                            actor,
-                            event.get("actor_user_id"),
-                            _json({"step_code": step_code}),
-                        ),
+                            "action": "experiment_used",
+                            "quantity": material["actual_value"],
+                            "unit": material["unit"],
+                            "experiment_id": experiment_id,
+                            "step_instance_id": step_row["id"],
+                            "effective_at_ms": effective_at_ms,
+                            "actor": actor,
+                            "actor_user_id": event.get("actor_user_id"),
+                            "payload": {"step_code": step_code},
+                        },
+                        connection=conn,
                     )
             release_type = {
                 "R201-31": "tyd02",

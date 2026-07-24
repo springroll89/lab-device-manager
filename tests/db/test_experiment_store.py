@@ -35,6 +35,8 @@ def test_repository_enables_foreign_keys_and_applies_r201_migration():
     assert "003_r201_binding_idempotency" in versions
     assert "004_traceability_mvp" in versions
     assert "007_parallel_traceability" in versions
+    assert "008_inventory_module" in versions
+    assert "009_inventory_ledger_backfill" in versions
 
 
 def test_viscometer_lease_is_exclusive_and_reusable_after_release():

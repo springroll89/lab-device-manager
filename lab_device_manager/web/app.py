@@ -3,6 +3,7 @@ import csv
 import io
 import json as _json
 import time
+from datetime import datetime
 from io import BytesIO
 
 import sqlite3
@@ -41,6 +42,8 @@ from lab_device_manager.experiments.service import (
     R201Service,
     STEP_LABELS,
 )
+from lab_device_manager.inventory import InventoryError, InventoryService
+from lab_device_manager.inventory.pubchem import lookup_chemical
 from lab_device_manager.web.auth import AuthManager
 from lab_device_manager.web.barcode import (
     BarcodeImageError,
@@ -49,7 +52,9 @@ from lab_device_manager.web.barcode import (
 )
 from lab_device_manager.web.trace_labels import (
     material_container_label_html,
-    qr_svg,
+    material_container_qr_payload,
+    qr_png,
+    storage_location_qr_payload,
     storage_location_label_html,
     trace_qr_payload,
     trace_labels_html,
@@ -117,9 +122,8 @@ def _event_to_dict(e):
 
 def _csv_safe(v):
     """Neutralize CSV formula injection (OWASP): if a string cell starts with a
-    formula character, prefix a single quote so spreadsheet apps treat it as text.
-    NOTE: the app is bound to 127.0.0.1 (single-user, local lab tool) — add auth
-    before exposing it on a network."""
+    formula character, prefix a single quote so spreadsheet apps treat it as
+    text."""
     if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + v
     return v
@@ -679,6 +683,7 @@ def create_app(
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024
     r201 = R201Service(repo)
+    inventory = InventoryService(repo.inventory)
     app.secret_key = secret_key if secret_key else _load_or_create_secret()
     auth = AuthManager(app, repo)
     app.config["PUBLIC_BASE_URL"] = str(public_base_url or "").rstrip("/")
@@ -890,6 +895,7 @@ def create_app(
         )
 
     @app.get("/materials")
+    @app.get("/inventory")
     @login_required
     def materials_page():
         return send_from_directory(app.static_folder, "materials.html")
@@ -906,6 +912,9 @@ def create_app(
                 return jsonify({"error": "batch_id already exists"}), 409
             return jsonify({"error": "database constraint failed"}), 409
         raise exc
+
+    def _inventory_error(exc: InventoryError):
+        return jsonify({"error": str(exc)}), exc.status_code
 
     def _device_surface(data_sources: list[dict]) -> dict:
         latest = engine.latest()
@@ -1289,45 +1298,312 @@ def create_app(
             return redirect(url_for("materials_page", scan=code))
         return redirect(url_for("experiments_page", scan=code))
 
-    @app.get("/api/material-containers")
-    def api_material_containers():
-        return jsonify(r201.list_material_containers())
+    @app.get("/api/inventory/summary")
+    def api_inventory_summary():
+        try:
+            return jsonify(
+                inventory.get_summary(request.args.get("today"))
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
 
-    @app.post("/api/material-containers")
+    @app.get("/api/inventory/items")
+    def api_inventory_items():
+        try:
+            return jsonify(inventory.list_items(request.args))
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post("/api/inventory/items")
     @auth.roles_required("super_admin", "supervisor")
-    def api_create_material_container():
+    @auth.csrf_required
+    def api_create_inventory_item():
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body, "created_by")
         body.setdefault(
             "client_event_id",
-            f"material-register-{body.get('container_code', '')}",
+            f"inventory-register-{time.time_ns()}",
         )
         try:
+            return jsonify(inventory.create_item(body)), 201
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/items/<int:item_id>")
+    def api_inventory_item_detail(item_id):
+        try:
+            return jsonify(inventory.get_item(item_id))
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.patch("/api/inventory/items/<int:item_id>")
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_update_inventory_item(item_id):
+        try:
             return jsonify(
-                r201.create_material_container(body)
-            ), 201
-        except R201Error as exc:
-            return _r201_error(exc)
+                inventory.update_item(
+                    item_id, dict(request.get_json(silent=True) or {})
+                )
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/pubchem")
+    def api_inventory_pubchem():
+        try:
+            return jsonify(lookup_chemical(request.args.get("cas", "")))
+        except ValueError as exc:
+            return _inventory_error(InventoryError(str(exc), 404))
+
+    @app.post("/api/inventory/items/<int:item_id>/movements")
+    @auth.csrf_required
+    def api_inventory_movement(item_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        body.setdefault(
+            "client_event_id",
+            f"inventory-movement-{item_id}-{time.time_ns()}",
+        )
+        try:
+            action = str(body.get("action") or "")
+            user = auth.current_user() or {}
+            if (
+                action in {
+                    "received",
+                    "adjusted",
+                    "quarantined",
+                    "disposed",
+                }
+                and user.get("role") not in {
+                    "super_admin",
+                    "supervisor",
+                }
+            ):
+                return jsonify({"error": "forbidden"}), 403
+            return jsonify(inventory.record_movement(item_id, body))
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/movements")
+    def api_inventory_movements():
+        try:
+            return jsonify(inventory.list_movements(request.args))
+        except (InventoryError, TypeError, ValueError) as exc:
+            if isinstance(exc, InventoryError):
+                return _inventory_error(exc)
+            return _inventory_error(InventoryError("分页参数无效"))
+
+    @app.get("/api/inventory/movements.csv")
+    def api_inventory_movements_csv():
+        filters = dict(request.args)
+        filters["limit"] = 200
+        filters["offset"] = 0
+        try:
+            first_page = inventory.list_movements(filters)
+            movements = list(first_page["movements"])
+            while len(movements) < first_page["total"]:
+                filters["offset"] = len(movements)
+                page = inventory.list_movements(filters)
+                if not page["movements"]:
+                    break
+                movements.extend(page["movements"])
+        except (InventoryError, TypeError, ValueError) as exc:
+            if isinstance(exc, InventoryError):
+                return _inventory_error(exc)
+            return _inventory_error(InventoryError("流水筛选参数无效"))
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "时间",
+                "操作类型",
+                "系统编号",
+                "物品名称",
+                "数量变化",
+                "结余",
+                "单位",
+                "操作人",
+                "实验批次",
+                "备注",
+            ]
+        )
+        for movement in movements:
+            writer.writerow(
+                [
+                    datetime.fromtimestamp(
+                        movement["effective_at_ms"] / 1000
+                    ).strftime("%Y-%m-%d %H:%M:%S"),
+                    movement["action"],
+                    _csv_safe(movement["container_code"]),
+                    _csv_safe(movement["material_name"]),
+                    movement["delta"],
+                    movement["quantity_after"],
+                    _csv_safe(movement.get("unit") or ""),
+                    _csv_safe(movement["actor"]),
+                    _csv_safe(movement.get("batch_id") or ""),
+                    _csv_safe(movement.get("note") or ""),
+                ]
+            )
+        return Response(
+            "\ufeff" + buffer.getvalue(),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename=puricore-inventory-audit.csv"
+                )
+            },
+        )
+
+    @app.get("/api/inventory/export.csv")
+    def api_inventory_export_csv():
+        try:
+            items = inventory.list_items(request.args)
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "系统编号",
+                "名称",
+                "类别",
+                "当前库存",
+                "单位",
+                "位置",
+                "负责人",
+                "供应商批号",
+                "有效期",
+                "状态",
+                "是否管制",
+                "CAS号",
+                "危险性",
+            ]
+        )
+        for item in items:
+            writer.writerow(
+                [
+                    _csv_safe(item["container_code"]),
+                    _csv_safe(item["material_name"]),
+                    item["category"],
+                    item["quantity_remaining"],
+                    _csv_safe(item["unit"]),
+                    _csv_safe(item.get("location") or ""),
+                    _csv_safe(item.get("owner") or ""),
+                    _csv_safe(item.get("supplier_lot") or ""),
+                    item.get("expires_on") or "",
+                    item["status"],
+                    "是" if item["is_controlled"] else "否",
+                    _csv_safe(item.get("cas_no") or ""),
+                    _csv_safe(" / ".join(item.get("hazards") or [])),
+                ]
+            )
+        return Response(
+            "\ufeff" + buffer.getvalue(),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename=puricore-inventory.csv"
+                )
+            },
+        )
+
+    @app.get("/api/inventory/disposal.csv")
+    def api_inventory_disposal_csv():
+        try:
+            items = inventory.list_items({"status": "quarantined"})
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            ["名称", "危险性", "主要成分", "负责人", "数量", "单位", "位置"]
+        )
+        for item in items:
+            writer.writerow(
+                [
+                    _csv_safe(item["material_name"]),
+                    _csv_safe("/".join(item.get("hazards") or [])),
+                    _csv_safe(item.get("note") or ""),
+                    _csv_safe(item.get("owner") or ""),
+                    item["quantity_remaining"],
+                    _csv_safe(item.get("unit") or ""),
+                    _csv_safe(item.get("location") or ""),
+                ]
+            )
+        return Response(
+            "\ufeff" + buffer.getvalue(),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename=puricore-disposal.csv"
+                )
+            },
+        )
+
+    @app.get("/api/material-containers")
+    def api_material_containers():
+        try:
+            return jsonify(inventory.list_items({"category": "chemical"}))
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post("/api/material-containers")
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_create_material_container():
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body, "created_by")
+        body = {
+            "code": body.get("container_code"),
+            "external_barcode": body.get("external_barcode"),
+            "name": body.get("material_name"),
+            "category": "chemical",
+            "quantity": body.get("quantity_remaining", 0),
+            "unit": body.get("unit") or "未指定",
+            "supplier": body.get("supplier"),
+            "lot_no": body.get("supplier_lot"),
+            "expiry_date": body.get("expires_on"),
+            "created_by": body.get("created_by"),
+            "created_by_user_id": body.get("created_by_user_id"),
+            "client_event_id": body.get("client_event_id"),
+        }
+        if not body.get("client_event_id"):
+            body["client_event_id"] = (
+                f"material-register-{body.get('code', '')}"
+            )
+        try:
+            return jsonify(inventory.create_item(body)), 201
+        except InventoryError as exc:
+            return _inventory_error(exc)
 
     @app.get("/api/material-containers/<int:container_id>")
     def api_material_container_detail(container_id):
-        container = repo.experiments.get_material_container_by_id(
-            container_id
-        )
-        if container is None:
-            return _r201_error(
-                R201Error("material container not found", 404)
+        try:
+            detail = inventory.get_item(container_id)
+            legacy_events = []
+            for movement in detail["movements"]:
+                event = dict(movement)
+                event["event_type"] = {
+                    "experiment_used": "used",
+                    "issued": "used",
+                    "received": "adjusted",
+                    "imported": "registered",
+                }.get(movement["action"], movement["action"])
+                event["quantity"] = (
+                    abs(movement["delta"])
+                    if movement["delta"] is not None
+                    else None
+                )
+                legacy_events.append(event)
+            return jsonify(
+                {
+                    "container": detail["item"],
+                    "events": legacy_events,
+                }
             )
-        return jsonify(
-            {
-                "container": container,
-                "events": (
-                    repo.experiments.list_material_container_events(
-                        container_id
-                    )
-                ),
-            }
-        )
+        except InventoryError as exc:
+            return _inventory_error(exc)
 
     @app.get("/api/material-containers/<int:container_id>/label")
     def api_material_container_label(container_id):
@@ -1435,6 +1711,7 @@ def create_app(
                 return _r201_error(exc)
             return _r201_error(R201Error("experiment_id and device_id are required"))
 
+    @app.get("/api/trace/qr.png")
     @app.get("/api/trace/qr.svg")
     def api_trace_qr():
         try:
@@ -1442,14 +1719,22 @@ def create_app(
                 request.args.get("code", "")
             )
             if found["kind"] == "trace_item":
-                code = found["item"]["item_code"]
+                item = found["item"]
+                experiment = r201.get_experiment(
+                    item["experiment_id"]
+                )["experiment"]
+                code = item["item_code"]
+                payload = trace_qr_payload(item, experiment)
             elif found["kind"] == "storage_location":
-                code = found["location"]["location_code"]
+                location = found["location"]
+                code = location["location_code"]
+                payload = storage_location_qr_payload(location)
             else:
-                code = found["material"]["container_code"]
-            payload = trace_qr_payload(_trace_base_url(), code)
-            response = Response(qr_svg(payload), mimetype="image/svg+xml")
-            response.headers["X-QR-Payload"] = payload
+                material = found["material"]
+                code = material["container_code"]
+                payload = material_container_qr_payload(material)
+            response = Response(qr_png(payload), mimetype="image/png")
+            response.headers["X-QR-Code"] = code
             return response
         except R201Error as exc:
             return _r201_error(exc)

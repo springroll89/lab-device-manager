@@ -269,6 +269,16 @@ class AuthManager:
 
         return decorator
 
+    def csrf_required(self, view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            csrf_error = self._csrf_error()
+            if csrf_error is not None:
+                return csrf_error
+            return view(*args, **kwargs)
+
+        return wrapped
+
     @staticmethod
     def add_security_headers(response):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

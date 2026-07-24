@@ -1,0 +1,679 @@
+const inventoryById = id => document.getElementById(id);
+
+const CATEGORY_LABELS = {
+  chemical:"化学品", consumable:"耗材", office:"办公用品"
+};
+const STATUS_LABELS = {
+  available:"可用", empty:"已用完", quarantined:"待处置/隔离",
+  expired:"已过期", disposed:"已处置"
+};
+const ACTION_LABELS = {
+  registered:"登记", received:"入库", issued:"领用", adjusted:"盘点",
+  experiment_used:"实验领用", opened:"开封", quarantined:"隔离",
+  disposed:"处置", imported:"历史迁移"
+};
+const HAZARDS = [
+  "易燃","易爆","氧化","有毒","腐蚀","反应性","有害/刺激","环境危害"
+];
+const inventoryState = {
+  items:[], summary:null, movements:[], movementTotal:0,
+  movementOffset:0, movementLimit:50, session:null, selected:null
+};
+
+function inventoryEventId(prefix) {
+  const unique = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${unique}`;
+}
+
+async function inventoryApi(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const csrfHeaders = !["GET","HEAD","OPTIONS"].includes(method)
+    && inventoryState.session?.csrf_token
+    ? {"X-CSRF-Token":inventoryState.session.csrf_token}
+    : {};
+  const response = await fetch(url, {
+    ...options,
+    headers:{
+      Accept:"application/json",
+      ...(options.body ? {"Content-Type":"application/json"} : {}),
+      ...csrfHeaders,
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const error = new Error(data.error || "请求失败");
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return data;
+}
+
+function setInventoryStatus(message, error = false, target = "inventoryStatus") {
+  const node = inventoryById(target);
+  if (!node) return;
+  node.textContent = message;
+  node.classList.toggle("error", error);
+}
+
+function textElement(tag, text, className = "") {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text;
+  return node;
+}
+
+function canManageInventory() {
+  return ["super_admin","supervisor"].includes(inventoryState.session?.role);
+}
+
+function renderSummary() {
+  const summary = inventoryState.summary || {};
+  const cards = [
+    ["物品总数","total_items",""],
+    ["低库存","low_stock","warn"],
+    ["库存超量","over_stock","warn"],
+    ["30 天内临期","expiring","warn"],
+    ["已过期","expired","danger"],
+    ["待处置","to_dispose","danger"],
+    ["已用完","used_up",""]
+  ];
+  const grid = inventoryById("inventorySummaryGrid");
+  grid.textContent = "";
+  cards.forEach(([label,key,tone]) => {
+    const card = document.createElement("article");
+    card.className = `summary-card ${tone}`;
+    card.append(
+      textElement("span", label),
+      textElement("strong", String(summary[key] || 0))
+    );
+    grid.appendChild(card);
+  });
+}
+
+function renderAlertDetails() {
+  const summary = inventoryState.summary || {};
+  const host = inventoryById("inventoryAlertDetails");
+  host.textContent = "";
+  const groups = [
+    ["低库存",summary.low_stock_items || [],item =>
+      `${item.material_name}：${item.quantity_remaining} ${item.unit}`],
+    ["临期/过期",[
+      ...(summary.expiring_items || []),
+      ...(summary.expired_items || [])
+    ],item => `${item.material_name}：${item.expires_on}`],
+    ["待处置",summary.to_dispose_items || [],item =>
+      `${item.material_name}：${item.quantity_remaining} ${item.unit}`]
+  ];
+  groups.forEach(([label,items,format]) => {
+    const group = document.createElement("article");
+    group.className = "alert-group";
+    group.appendChild(textElement("h3", `${label} · ${items.length}`));
+    if (!items.length) {
+      group.appendChild(textElement("p", "暂无", "muted"));
+    } else {
+      const list = document.createElement("ul");
+      items.slice(0,8).forEach(item => {
+        const entry = document.createElement("li");
+        const button = textElement("button", format(item), "btn small");
+        button.type = "button";
+        button.addEventListener("click", () =>
+          openInventoryDetail(item.id).catch(showInventoryError)
+        );
+        entry.appendChild(button);
+        list.appendChild(entry);
+      });
+      group.appendChild(list);
+    }
+    host.appendChild(group);
+  });
+  const hazards = Object.entries(summary.hazard_counts || {})
+    .sort((left,right) => right[1] - left[1])
+    .map(([hazard,count]) => `${hazard} ${count}`)
+    .join(" · ");
+  const adjustText = summary.days_since_last_adjust == null
+    ? "尚未记录库存盘点"
+    : `距上次盘点 ${summary.days_since_last_adjust} 天`;
+  inventoryById("inventoryAdjustStatus").textContent =
+    `${adjustText}${hazards ? ` · 危险性：${hazards}` : ""}`;
+}
+
+function itemStatus(item) {
+  if (
+    item.category === "chemical" && item.expires_on &&
+    item.expires_on < new Date().toISOString().slice(0,10)
+  ) return "expired";
+  return item.status;
+}
+
+function renderItems() {
+  const body = inventoryById("inventoryRows");
+  body.textContent = "";
+  inventoryById("inventoryCount").textContent =
+    `共 ${inventoryState.items.length} 条`;
+  if (!inventoryState.items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 8;
+    cell.className = "muted";
+    cell.textContent = "没有符合条件的物品。";
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+  inventoryState.items.forEach(item => {
+    const row = document.createElement("tr");
+    row.dataset.itemId = item.id;
+    const status = itemStatus(item);
+    const values = [
+      item.container_code,
+      item.material_name,
+      CATEGORY_LABELS[item.category] || item.category,
+      `${item.quantity_remaining ?? 0} ${item.unit || ""}`.trim(),
+      item.location || "—",
+      `${item.supplier_lot || "—"} / ${item.expires_on || "—"}`
+    ];
+    values.forEach(value => row.appendChild(textElement("td", value)));
+    const statusCell = document.createElement("td");
+    const statusBadge = textElement(
+      "span", STATUS_LABELS[status] || status, `badge ${status}`
+    );
+    statusCell.appendChild(statusBadge);
+    if (item.is_controlled) {
+      statusCell.append(" ", textElement("span", "管制", "badge controlled"));
+    }
+    const actionCell = document.createElement("td");
+    const detail = textElement("button", "详情", "btn small");
+    detail.type = "button";
+    detail.addEventListener("click", event => {
+      event.stopPropagation();
+      openInventoryDetail(item.id).catch(showInventoryError);
+    });
+    const label = textElement("a", "标签", "btn small");
+    label.href = `/api/material-containers/${item.id}/label`;
+    label.target = "_blank";
+    label.rel = "noopener";
+    label.addEventListener("click", event => event.stopPropagation());
+    actionCell.append(detail, " ", label);
+    row.append(statusCell, actionCell);
+    row.addEventListener("click", () =>
+      openInventoryDetail(item.id).catch(showInventoryError)
+    );
+    body.appendChild(row);
+  });
+}
+
+function renderAudit() {
+  const host = inventoryById("inventoryAuditRows");
+  host.textContent = "";
+  inventoryById("inventoryAuditCount").textContent =
+    `共 ${inventoryState.movementTotal} 条流水`;
+  const totalPages = Math.max(
+    1, Math.ceil(inventoryState.movementTotal / inventoryState.movementLimit)
+  );
+  const currentPage = Math.floor(
+    inventoryState.movementOffset / inventoryState.movementLimit
+  ) + 1;
+  inventoryById("inventoryAuditPage").textContent =
+    `${currentPage} / ${totalPages}`;
+  inventoryById("inventoryAuditPrevious").disabled = currentPage <= 1;
+  inventoryById("inventoryAuditNext").disabled = currentPage >= totalPages;
+  if (!inventoryState.movements.length) {
+    host.appendChild(textElement("p", "暂无库存流水。", "muted"));
+    return;
+  }
+  inventoryState.movements.forEach(movement => {
+    const row = document.createElement("div");
+    row.className = "movement";
+    const amount = movement.delta > 0
+      ? `+${movement.delta}` : String(movement.delta);
+    row.append(
+      textElement(
+        "strong",
+        `${ACTION_LABELS[movement.action] || movement.action} · ${
+          movement.material_name
+        } · ${amount} ${movement.unit || ""}`
+      ),
+      textElement(
+        "div",
+        `${new Date(movement.effective_at_ms).toLocaleString("zh-CN")} · ${
+          movement.actor
+        }${movement.batch_id ? ` · 实验 ${movement.batch_id}` : ""}${
+          movement.note ? ` · ${movement.note}` : ""
+        }`,
+        "muted"
+      )
+    );
+    host.appendChild(row);
+  });
+}
+
+function auditQuery() {
+  const query = new URLSearchParams();
+  const values = {
+    action:inventoryById("inventoryAuditAction").value,
+    from:inventoryById("inventoryAuditFrom").value,
+    to:inventoryById("inventoryAuditTo").value,
+    limit:String(inventoryState.movementLimit),
+    offset:String(inventoryState.movementOffset)
+  };
+  Object.entries(values).forEach(([key,value]) => {
+    if (value) query.set(key,value);
+  });
+  const exportQuery = new URLSearchParams(query);
+  exportQuery.delete("limit");
+  exportQuery.delete("offset");
+  inventoryById("exportInventoryAudit").href =
+    `/api/inventory/movements.csv?${exportQuery.toString()}`;
+  return query.toString();
+}
+
+function filtersQuery() {
+  const values = {
+    search:inventoryById("inventorySearch").value.trim(),
+    category:inventoryById("inventoryCategory").value,
+    status:inventoryById("inventoryItemStatus").value,
+    location:inventoryById("inventoryLocation").value.trim(),
+    controlled:inventoryById("inventoryControlled").value
+  };
+  const query = new URLSearchParams();
+  Object.entries(values).forEach(([key,value]) => {
+    if (value) query.set(key,value);
+  });
+  return query.toString();
+}
+
+async function loadInventory() {
+  setInventoryStatus("正在读取库存…");
+  const query = filtersQuery();
+  const auditParams = auditQuery();
+  const [summary,items,audit,session] = await Promise.all([
+    inventoryApi("/api/inventory/summary"),
+    inventoryApi(`/api/inventory/items${query ? `?${query}` : ""}`),
+    inventoryApi(`/api/inventory/movements?${auditParams}`),
+    inventoryApi("/api/session")
+  ]);
+  inventoryState.summary = summary;
+  inventoryState.items = items;
+  inventoryState.movements = audit.movements;
+  inventoryState.movementTotal = audit.total;
+  inventoryState.session = session;
+  inventoryById("openItemForm").hidden = !canManageInventory();
+  renderSummary();
+  renderAlertDetails();
+  renderItems();
+  renderAudit();
+  setInventoryStatus("库存已更新");
+}
+
+async function loadInventoryAudit() {
+  const audit = await inventoryApi(
+    `/api/inventory/movements?${auditQuery()}`
+  );
+  inventoryState.movements = audit.movements;
+  inventoryState.movementTotal = audit.total;
+  renderAudit();
+}
+
+function showInventoryError(error) {
+  setInventoryStatus(error.message || "操作失败", true);
+}
+
+function renderHazardOptions(selected = []) {
+  const host = inventoryById("itemHazards");
+  host.textContent = "";
+  HAZARDS.forEach(hazard => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = hazard;
+    input.checked = selected.includes(hazard);
+    label.append(input, document.createTextNode(hazard));
+    host.appendChild(label);
+  });
+}
+
+function toggleChemicalFields() {
+  inventoryById("chemicalFields").hidden =
+    inventoryById("itemCategory").value !== "chemical";
+}
+
+function resetItemForm(item = null) {
+  const form = inventoryById("inventoryItemForm");
+  form.reset();
+  inventoryById("itemId").value = item?.id || "";
+  inventoryById("itemFormTitle").textContent = item ? "编辑物品" : "新增物品";
+  inventoryById("itemQuantity").disabled = Boolean(item);
+  inventoryById("itemQuantity").closest(".field").hidden = Boolean(item);
+  inventoryById("itemCategory").value = item?.category || "chemical";
+  inventoryById("itemName").value = item?.material_name || "";
+  inventoryById("itemQuantity").value = item?.quantity_remaining ?? 0;
+  inventoryById("itemUnit").value = item?.unit || "";
+  inventoryById("itemLocation").value = item?.location || "";
+  inventoryById("itemOwner").value = item?.owner || "";
+  inventoryById("itemMin").value = item?.min_threshold ?? "";
+  inventoryById("itemMax").value = item?.max_threshold ?? "";
+  inventoryById("itemExternalBarcode").value = item?.external_barcode || "";
+  inventoryById("itemLot").value = item?.supplier_lot || "";
+  inventoryById("itemControlled").checked = Boolean(item?.is_controlled);
+  inventoryById("itemCas").value = item?.cas_no || "";
+  inventoryById("itemSpec").value = item?.spec || "";
+  inventoryById("itemSds").value = item?.sds_url || "";
+  inventoryById("itemExpiry").value = item?.expires_on || "";
+  inventoryById("itemOpened").value = item?.opened_on || "";
+  inventoryById("itemPreparedBy").value = item?.prepared_by || "";
+  inventoryById("itemPreparedDate").value = item?.prepared_date || "";
+  inventoryById("itemNote").value = item?.note || "";
+  renderHazardOptions(item?.hazards || []);
+  toggleChemicalFields();
+  setInventoryStatus("", false, "itemFormStatus");
+}
+
+function itemFormPayload() {
+  const optionalNumber = id => {
+    const value = inventoryById(id).value;
+    return value === "" ? null : Number(value);
+  };
+  return {
+    name:inventoryById("itemName").value,
+    category:inventoryById("itemCategory").value,
+    quantity:Number(inventoryById("itemQuantity").value || 0),
+    unit:inventoryById("itemUnit").value,
+    location:inventoryById("itemLocation").value || null,
+    owner:inventoryById("itemOwner").value || null,
+    min_threshold:optionalNumber("itemMin"),
+    max_threshold:optionalNumber("itemMax"),
+    external_barcode:inventoryById("itemExternalBarcode").value || null,
+    lot_no:inventoryById("itemLot").value || null,
+    is_controlled:inventoryById("itemControlled").checked,
+    cas_no:inventoryById("itemCas").value || null,
+    spec:inventoryById("itemSpec").value || null,
+    sds_url:inventoryById("itemSds").value || null,
+    expiry_date:inventoryById("itemExpiry").value || null,
+    opened_date:inventoryById("itemOpened").value || null,
+    prepared_by:inventoryById("itemPreparedBy").value || null,
+    prepared_date:inventoryById("itemPreparedDate").value || null,
+    hazards:[...inventoryById("itemHazards").querySelectorAll("input:checked")]
+      .map(input => input.value),
+    note:inventoryById("itemNote").value || null,
+    client_event_id:inventoryEventId("inventory-create")
+  };
+}
+
+async function submitItemForm(event) {
+  event.preventDefault();
+  const id = inventoryById("itemId").value;
+  const payload = itemFormPayload();
+  try {
+    const item = await inventoryApi(
+      id ? `/api/inventory/items/${id}` : "/api/inventory/items",
+      {method:id ? "PATCH" : "POST", body:JSON.stringify(payload)}
+    );
+    inventoryById("itemFormDialog").close();
+    await loadInventory();
+    await openInventoryDetail(item.id);
+  } catch (error) {
+    setInventoryStatus(error.message, true, "itemFormStatus");
+  }
+}
+
+function appendDetailValue(host, label, value) {
+  const card = document.createElement("div");
+  card.className = "detail-value";
+  card.append(textElement("span", label), textElement("strong", value || "—"));
+  host.appendChild(card);
+}
+
+async function openInventoryDetail(itemId) {
+  const detail = await inventoryApi(`/api/inventory/items/${itemId}`);
+  const item = detail.item;
+  inventoryState.selected = item;
+  inventoryById("inventoryDetailTitle").textContent =
+    `${item.material_name} · ${item.container_code}`;
+  const body = inventoryById("inventoryDetailBody");
+  body.textContent = "";
+  if (item.is_controlled) {
+    body.appendChild(textElement(
+      "p", "管制类物品：每次领用自动记录登录账号。", "badge controlled"
+    ));
+  }
+  const grid = document.createElement("div");
+  grid.className = "detail-grid";
+  [
+    ["类别",CATEGORY_LABELS[item.category] || item.category],
+    ["当前库存",`${item.quantity_remaining} ${item.unit}`],
+    ["状态",STATUS_LABELS[itemStatus(item)] || itemStatus(item)],
+    ["位置",item.location],
+    ["负责人",item.owner],
+    ["供应商批号",item.supplier_lot],
+    ["有效期",item.expires_on],
+    ["CAS",item.cas_no],
+    ["规格",item.spec],
+    ["危险性",(item.hazards || []).join(" / ")],
+    ["SDS",item.sds_url],
+    ["开封日期",item.opened_on]
+  ].forEach(([label,value]) => appendDetailValue(grid,label,String(value || "—")));
+  body.appendChild(grid);
+  const actions = document.createElement("div");
+  actions.className = "toolbar";
+  actions.style.marginTop = "14px";
+  const actionOptions = [
+    ["issued","领用","primary"],
+    ["received","入库",""],
+    ["adjusted","盘点",""],
+    ["quarantined","隔离","danger"],
+    ["disposed","处置","danger"]
+  ];
+  actionOptions.forEach(([action,label,tone]) => {
+    if (
+      ["received","adjusted","quarantined","disposed"].includes(action) &&
+      !canManageInventory()
+    ) return;
+    const button = textElement("button", label, `btn ${tone}`);
+    button.type = "button";
+    button.disabled = action === "issued" && item.status !== "available";
+    button.addEventListener("click", () => openOperation(item,action,label));
+    actions.appendChild(button);
+  });
+  if (canManageInventory()) {
+    const edit = textElement("button", "编辑资料", "btn");
+    edit.type = "button";
+    edit.addEventListener("click", () => {
+      inventoryById("inventoryDetailDialog").close();
+      resetItemForm(item);
+      inventoryById("itemFormDialog").showModal();
+    });
+    actions.appendChild(edit);
+  }
+  const print = textElement("a", "打印标签", "btn");
+  print.href = `/api/material-containers/${item.id}/label`;
+  print.target = "_blank";
+  print.rel = "noopener";
+  actions.appendChild(print);
+  body.appendChild(actions);
+  body.appendChild(textElement("h3", "库存流水"));
+  detail.movements.forEach(movement => {
+    const row = document.createElement("div");
+    row.className = "movement";
+    row.append(
+      textElement(
+        "strong",
+        `${ACTION_LABELS[movement.action] || movement.action} · ${
+          movement.delta > 0 ? "+" : ""
+        }${movement.delta} ${movement.unit || ""}`
+      ),
+      textElement(
+        "div",
+        `${new Date(movement.effective_at_ms).toLocaleString("zh-CN")} · ${
+          movement.actor
+        }${movement.batch_id ? ` · ${movement.batch_id}` : ""}${
+          movement.note ? ` · ${movement.note}` : ""
+        }`,
+        "muted"
+      )
+    );
+    body.appendChild(row);
+  });
+  inventoryById("inventoryDetailDialog").showModal();
+}
+
+function openOperation(item, action, label) {
+  inventoryById("operationItemId").value = item.id;
+  inventoryById("operationAction").value = action;
+  inventoryById("inventoryOperationTitle").textContent =
+    `${label} · ${item.material_name}`;
+  const needsQuantity = ["received","issued","adjusted"].includes(action);
+  inventoryById("operationQuantityField").hidden = !needsQuantity;
+  inventoryById("operationQuantity").required = needsQuantity;
+  inventoryById("operationQuantity").value =
+    action === "adjusted" ? item.quantity_remaining : "";
+  inventoryById("operationQuantityLabel").textContent =
+    action === "adjusted" ? "实际盘点数量" : `数量（${item.unit}）`;
+  inventoryById("operationNote").value = "";
+  setInventoryStatus("", false, "operationStatus");
+  inventoryById("inventoryOperationDialog").showModal();
+}
+
+async function submitOperation(event) {
+  event.preventDefault();
+  const itemId = inventoryById("operationItemId").value;
+  const action = inventoryById("operationAction").value;
+  const quantity = Number(inventoryById("operationQuantity").value);
+  const payload = {
+    action,
+    note:inventoryById("operationNote").value || null,
+    client_event_id:inventoryEventId(`inventory-${action}`)
+  };
+  if (["received","issued"].includes(action)) payload.quantity = quantity;
+  if (action === "adjusted") payload.actual_quantity = quantity;
+  try {
+    await inventoryApi(`/api/inventory/items/${itemId}/movements`, {
+      method:"POST", body:JSON.stringify(payload)
+    });
+    inventoryById("inventoryOperationDialog").close();
+    inventoryById("inventoryDetailDialog").close();
+    await loadInventory();
+    await openInventoryDetail(itemId);
+  } catch (error) {
+    setInventoryStatus(error.message, true, "operationStatus");
+  }
+}
+
+async function lookupCas() {
+  const cas = inventoryById("itemCas").value.trim();
+  setInventoryStatus("正在查询 PubChem…", false, "itemFormStatus");
+  try {
+    const result = await inventoryApi(
+      `/api/inventory/pubchem?cas=${encodeURIComponent(cas)}`
+    );
+    if (!inventoryById("itemName").value) {
+      inventoryById("itemName").value = result.name || "";
+    }
+    if (!inventoryById("itemSpec").value) {
+      inventoryById("itemSpec").value = result.spec || "";
+    }
+    if (!inventoryById("itemSds").value) {
+      inventoryById("itemSds").value = result.sds_url || "";
+    }
+    renderHazardOptions([
+      ...new Set([
+        ...[...inventoryById("itemHazards").querySelectorAll("input:checked")]
+          .map(input => input.value),
+        ...(result.hazards || [])
+      ])
+    ]);
+    setInventoryStatus("已填入可识别的化学品信息", false, "itemFormStatus");
+  } catch (error) {
+    setInventoryStatus(error.message, true, "itemFormStatus");
+  }
+}
+
+async function acceptInventoryScan(code) {
+  const result = await inventoryApi(
+    `/api/scan/resolve?code=${encodeURIComponent(String(code || "").trim())}`
+  );
+  if (result.kind !== "material_container") {
+    throw new Error("该二维码不是库存物品标签");
+  }
+  await openInventoryDetail(result.material.id);
+}
+
+function wireInventoryEvents() {
+  inventoryById("inventoryFilters").addEventListener("input", () => {
+    clearTimeout(wireInventoryEvents.filterTimer);
+    wireInventoryEvents.filterTimer = setTimeout(
+      () => loadInventory().catch(showInventoryError), 180
+    );
+  });
+  inventoryById("refreshInventory").addEventListener(
+    "click", () => loadInventory().catch(showInventoryError)
+  );
+  inventoryById("inventoryAuditFilters").addEventListener(
+    "submit", event => {
+      event.preventDefault();
+      inventoryState.movementOffset = 0;
+      loadInventoryAudit().catch(showInventoryError);
+    }
+  );
+  inventoryById("refreshInventoryAudit").addEventListener(
+    "click", () => {
+      inventoryState.movementOffset = 0;
+      loadInventoryAudit().catch(showInventoryError);
+    }
+  );
+  ["inventoryAuditAction","inventoryAuditFrom","inventoryAuditTo"].forEach(id => {
+    inventoryById(id).addEventListener("change", () => {
+      inventoryState.movementOffset = 0;
+      auditQuery();
+    });
+  });
+  inventoryById("inventoryAuditPrevious").addEventListener("click", () => {
+    inventoryState.movementOffset = Math.max(
+      0, inventoryState.movementOffset - inventoryState.movementLimit
+    );
+    loadInventoryAudit().catch(showInventoryError);
+  });
+  inventoryById("inventoryAuditNext").addEventListener("click", () => {
+    if (
+      inventoryState.movementOffset + inventoryState.movementLimit
+      >= inventoryState.movementTotal
+    ) return;
+    inventoryState.movementOffset += inventoryState.movementLimit;
+    loadInventoryAudit().catch(showInventoryError);
+  });
+  inventoryById("openItemForm").addEventListener("click", () => {
+    resetItemForm();
+    inventoryById("itemFormDialog").showModal();
+  });
+  inventoryById("openInventoryScanner").addEventListener("click", () => {
+    PuricoreScanner.open({onResult:acceptInventoryScan}).catch(showInventoryError);
+  });
+  inventoryById("inventoryItemForm").addEventListener("submit", submitItemForm);
+  inventoryById("inventoryOperationForm").addEventListener(
+    "submit", submitOperation
+  );
+  inventoryById("itemCategory").addEventListener(
+    "change", toggleChemicalFields
+  );
+  inventoryById("lookupCas").addEventListener("click", lookupCas);
+  document.querySelectorAll("[data-close]").forEach(button => {
+    button.addEventListener("click", () =>
+      inventoryById(button.dataset.close).close()
+    );
+  });
+  inventoryById("cameraScanClose").addEventListener("click", async () => {
+    await PuricoreScanner.stop();
+    inventoryById("cameraScanDialog").close();
+  });
+  inventoryById("cameraScanManualSubmit").addEventListener(
+    "click", () => PuricoreScanner.submitManual()
+  );
+}
+
+wireInventoryEvents();
+renderHazardOptions();
+loadInventory().then(async () => {
+  const scanned = new URLSearchParams(location.search).get("scan");
+  if (scanned) await acceptInventoryScan(scanned);
+}).catch(showInventoryError);
