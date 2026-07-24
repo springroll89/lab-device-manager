@@ -111,35 +111,6 @@ function buildDeviceCard(dev, latest, metrics) {
   return card;
 }
 
-async function loadDashboardSession() {
-  try {
-    const response = await fetch("/api/session");
-    if (response.status === 401) {
-      location.replace(`/login?next=${encodeURIComponent(location.pathname)}`);
-      return;
-    }
-    if (!response.ok) return;
-    const data = await response.json();
-    const identity = $("dashboardIdentity");
-    if (identity) {
-      identity.textContent = `${data.role_label} · ${data.operator}`;
-    }
-    const accountEntry = $("accountEntry");
-    if (accountEntry) {
-      accountEntry.classList.remove("hidden");
-      accountEntry.href = data.can_manage_accounts
-        ? "/accounts"
-        : "/change-password";
-      accountEntry.textContent = data.can_manage_accounts
-        ? "账号管理"
-        : "修改密码";
-    }
-  } catch (_) {
-    const identity = $("dashboardIdentity");
-    if (identity) identity.textContent = "账号读取失败";
-  }
-}
-
 async function pollStatus() {
   let d;
   try { d = await (await fetch("/api/status")).json(); } catch (e) { return; }
@@ -220,7 +191,6 @@ async function tagRun(runId) {
   }
 }
 
-loadDashboardSession();
 pollStatus();
 loadRuns();
 setInterval(pollStatus, 1000);

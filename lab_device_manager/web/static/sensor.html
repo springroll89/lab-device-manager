@@ -83,7 +83,10 @@ canvas{width:100%;height:100%}
       <div class="brand-title">设备采集管理台</div>
     </div>
   </div>
-  <div class="env-badge">本地实验室</div>
+  <div class="header-account-group">
+    <div class="env-badge">本地实验室</div>
+    <div data-account-menu></div>
+  </div>
 </header>
 <div class="container">
   <a href="/" class="back-link">← 返回首页</a>
@@ -184,6 +187,7 @@ canvas{width:100%;height:100%}
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/static/account-menu.js"></script>
 <script>
 const deviceId = parseInt(window.location.pathname.split('/').pop());
 const CH_COLORS = ['#7CE3BF', '#87B7D7', '#D1B477'];

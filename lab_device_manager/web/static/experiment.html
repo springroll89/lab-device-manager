@@ -172,10 +172,7 @@
     <div class="top-actions">
       <span class="mode">纸电并行验证</span>
       <a class="link-btn" href="/">设备看板</a>
-      <a id="sessionUser" class="user-control" href="/login?next=/experiments">操作员 · 正在读取</a>
-      <form id="logoutForm" class="logout-form hidden" method="post" action="/logout">
-        <button class="logout-button" type="submit">退出</button>
-      </form>
+      <div data-account-menu></div>
     </div>
   </header>
 
@@ -466,6 +463,7 @@
   </dialog>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/static/account-menu.js"></script>
   <script src="/static/experiment.js"></script>
 </body>
 </html>

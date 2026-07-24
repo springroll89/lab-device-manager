@@ -646,29 +646,11 @@ async function loadSession() {
     if (byId("operatorDisplay")) {
       byId("operatorDisplay").textContent = currentOperator;
     }
-    const sessionUser = byId("sessionUser");
-    if (sessionUser) {
-      sessionUser.textContent = data.authenticated
-        ? `${data.role_label || "操作员"} · ${currentOperator}`
-        : "登录 / 设置操作员";
-      sessionUser.href = data.can_manage_accounts
-        ? "/accounts"
-        : "/change-password";
-    }
-    const logoutForm = byId("logoutForm");
-    if (logoutForm) {
-      logoutForm.classList.toggle("hidden", !data.authenticated);
-    }
     return data;
   } catch (error) {
     currentOperator = "本机操作员";
     if (byId("operatorDisplay")) {
       byId("operatorDisplay").textContent = "读取失败";
-    }
-    const sessionUser = byId("sessionUser");
-    if (sessionUser) {
-      sessionUser.textContent = "重新登录";
-      sessionUser.href = `/login?next=${encodeURIComponent(location.pathname)}`;
     }
     if (error.httpStatus === 401) {
       location.replace(`/login?next=${encodeURIComponent(location.pathname)}`);
