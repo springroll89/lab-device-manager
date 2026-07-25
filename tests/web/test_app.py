@@ -445,6 +445,7 @@ def test_authenticated_pages_share_account_menu_entry(tmp_path):
         "sensor.html",
         "experiment.html",
         "materials.html",
+        "hazardous-waste.html",
         "measurement-station.html",
         "accounts.html",
     ):
@@ -460,7 +461,13 @@ def test_authenticated_pages_share_fixed_primary_navigation(tmp_path):
 
     navigation = client.get("/static/primary-navigation.js")
     assert navigation.status_code == 200
-    labels = ("设备看板", "实验执行", "物品与库存", "粘度工位")
+    labels = (
+        "设备看板",
+        "实验执行",
+        "物品与库存",
+        "危废管理",
+        "粘度工位",
+    )
     positions = [navigation.data.index(label.encode()) for label in labels]
     assert positions == sorted(positions)
     assert b'link.setAttribute("aria-current", "page")' in navigation.data
@@ -472,6 +479,7 @@ def test_authenticated_pages_share_fixed_primary_navigation(tmp_path):
         "sensor.html",
         "experiment.html",
         "materials.html",
+        "hazardous-waste.html",
         "measurement-station.html",
         "accounts.html",
     ):

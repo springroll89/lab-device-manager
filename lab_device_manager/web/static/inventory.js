@@ -15,7 +15,24 @@ const ACTION_LABELS = {
 const HAZARDS = [
   "易燃","易爆","氧化","有毒","腐蚀","反应性","有害/刺激","环境危害"
 ];
-const CONTROL_CATEGORIES = ["易制爆","易制毒第三类","剧毒","内部受控"];
+const CONTROL_CATEGORIES = [
+  "易制爆","易制毒第一类","易制毒第二类","易制毒第三类",
+  "剧毒","重大危险源","药品类易制毒","内部受控"
+];
+const STORAGE_GROUP_LABELS = {
+  unassessed:"未判定", general_chemical:"一般化学品", flammable:"易燃品",
+  oxidizer:"氧化剂", acid:"酸", alkali:"碱", toxic:"有毒品",
+  water_reactive:"遇水反应", pyrophoric:"自燃品",
+  compressed_gas:"压缩气体", refrigerated:"冷藏品"
+};
+const GHS_PICTOGRAMS = [
+  "GHS01","GHS02","GHS03","GHS04","GHS05",
+  "GHS06","GHS07","GHS08","GHS09"
+];
+const PHYSICAL_CONTROLS = [
+  "通风","防泄漏托盘","防火","防爆","温度监控",
+  "视频监控","入侵报警","双人双锁"
+];
 const HAZARDOUS_STATUS_LABELS = {
   not_assessed:"未评估", listed:"危险化学品",
   not_listed:"未在目录检出", pending_review:"待法规核验"
@@ -23,7 +40,7 @@ const HAZARDOUS_STATUS_LABELS = {
 const inventoryState = {
   items:[], summary:null, movements:[], movementTotal:0,
   movementOffset:0, movementLimit:50, session:null, selected:null,
-  locations:[]
+  locations:[], approvals:[]
 };
 
 function inventoryEventId(prefix) {
@@ -74,11 +91,87 @@ function canManageInventory() {
   return ["super_admin","supervisor"].includes(inventoryState.session?.role);
 }
 
+function renderLocationOptions() {
+  const list = inventoryById("inventoryLocationOptions");
+  list.textContent = "";
+  inventoryState.locations.forEach(location => {
+    const option = document.createElement("option");
+    option.value = location.location_code;
+    option.label = `${location.display_name} · ${
+      (location.allowed_storage_groups || [])
+        .map(group => STORAGE_GROUP_LABELS[group] || group).join("、")
+    }`;
+    list.appendChild(option);
+  });
+}
+
+function renderApprovals() {
+  const panel = inventoryById("inventoryApprovalPanel");
+  panel.hidden = !canManageInventory();
+  if (panel.hidden) return;
+  const host = inventoryById("inventoryApprovalRows");
+  host.textContent = "";
+  inventoryById("inventoryApprovalCount").textContent =
+    `${inventoryState.approvals.length} 项`;
+  if (!inventoryState.approvals.length) {
+    host.appendChild(textElement("p", "暂无待确认操作。", "muted"));
+    return;
+  }
+  inventoryState.approvals.forEach(approval => {
+    const row = document.createElement("div");
+    row.className = "movement";
+    const request = approval.request_payload || {};
+    const amount = request.quantity ?? request.actual_quantity ?? "—";
+    row.append(
+      textElement(
+        "strong",
+        `${ACTION_LABELS[approval.action] || approval.action} · ${
+          approval.material_name
+        } · ${amount} ${approval.unit || ""}`
+      ),
+      textElement(
+        "div",
+        `${new Date(approval.requested_at_ms).toLocaleString("zh-CN")} · 申请人 ${
+          approval.requested_by
+        }${request.note ? ` · ${request.note}` : ""}`,
+        "muted"
+      )
+    );
+    const controls = document.createElement("div");
+    controls.className = "inline";
+    controls.style.marginTop = "8px";
+    [["approve","确认并执行","primary"],["reject","驳回","danger"]]
+      .forEach(([decision,label,tone]) => {
+        const button = textElement("button", label, `btn small ${tone}`);
+        button.type = "button";
+        button.addEventListener("click", async () => {
+          try {
+            await inventoryApi(
+              `/api/inventory/movement-approvals/${approval.id}/decision`,
+              {
+                method:"POST",
+                body:JSON.stringify({decision})
+              }
+            );
+            await loadInventory();
+          } catch (error) {
+            showInventoryError(error);
+          }
+        });
+        controls.appendChild(button);
+      });
+    row.appendChild(controls);
+    host.appendChild(row);
+  });
+}
+
 function renderSummary() {
   const summary = inventoryState.summary || {};
   const cards = [
     ["物品总数","total_items",""],
     ["危险化学品","hazardous","danger"],
+    ["合规资料待补","compliance_incomplete","danger"],
+    ["待双人确认","pending_dual_approvals","warn"],
     ["低库存","low_stock","warn"],
     ["库存超量","over_stock","warn"],
     ["30 天内临期","expiring","warn"],
@@ -111,7 +204,11 @@ function renderAlertDetails() {
       ...(summary.expired_items || [])
     ],item => `${item.material_name}：${item.expires_on}`],
     ["待处置",summary.to_dispose_items || [],item =>
-      `${item.material_name}：${item.quantity_remaining} ${item.unit}`]
+      `${item.material_name}：${item.quantity_remaining} ${item.unit}`],
+    ["合规资料待补",summary.compliance_incomplete_items || [],item =>
+      `${item.material_name}：${HAZARDOUS_STATUS_LABELS[
+        item.hazardous_status
+      ] || item.hazardous_status}`]
   ];
   groups.forEach(([label,items,format]) => {
     const group = document.createElement("article");
@@ -332,7 +429,13 @@ async function loadInventory() {
   inventoryState.movementTotal = audit.total;
   inventoryState.session = session;
   inventoryState.locations = locations;
+  inventoryState.approvals = canManageInventory()
+    ? (await inventoryApi("/api/inventory/movement-approvals")).approvals
+    : [];
   inventoryById("openItemForm").hidden = !canManageInventory();
+  inventoryById("openLocationForm").hidden = !canManageInventory();
+  renderLocationOptions();
+  renderApprovals();
   renderSummary();
   renderAlertDetails();
   renderItems();
@@ -381,6 +484,22 @@ function renderControlCategoryOptions(selected = []) {
   });
 }
 
+function renderChoiceCheckboxes(hostId, values, selected = []) {
+  const host = inventoryById(hostId);
+  host.textContent = "";
+  values.forEach(value => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = value;
+    input.checked = selected.includes(value);
+    label.append(input, document.createTextNode(
+      STORAGE_GROUP_LABELS[value] || value
+    ));
+    host.appendChild(label);
+  });
+}
+
 function toggleChemicalFields() {
   inventoryById("chemicalFields").hidden =
     inventoryById("itemCategory").value !== "chemical";
@@ -403,12 +522,39 @@ function resetItemForm(item = null) {
   inventoryById("itemMax").value = item?.max_threshold ?? "";
   inventoryById("itemExternalBarcode").value = item?.external_barcode || "";
   inventoryById("itemLot").value = item?.supplier_lot || "";
+  inventoryById("itemSourceOrganization").value =
+    item?.source_organization || "";
+  inventoryById("itemHandoverNo").value =
+    item?.handover_document_no || "";
+  inventoryById("itemHandoverRef").value =
+    item?.handover_document_ref || "";
+  inventoryById("itemReceivedDate").value = item?.received_at_ms
+    ? new Date(item.received_at_ms).toISOString().slice(0,10) : "";
+  inventoryById("itemReceivedBy").value = item?.received_by || "";
+  inventoryById("itemAcceptedBy").value = item?.accepted_by || "";
+  inventoryById("itemFilingNo").value =
+    item?.regulatory_filing_no || "";
+  inventoryById("itemFilingRef").value =
+    item?.regulatory_filing_ref || "";
   inventoryById("itemControlled").checked = Boolean(item?.is_controlled);
   inventoryById("itemHazardousStatus").value =
     item?.hazardous_status || "not_assessed";
+  inventoryById("itemStorageGroup").value =
+    item?.storage_group || "unassessed";
   inventoryById("itemCas").value = item?.cas_no || "";
   inventoryById("itemSpec").value = item?.spec || "";
   inventoryById("itemSds").value = item?.sds_url || "";
+  inventoryById("itemSdsRevision").value = item?.sds_revision || "";
+  inventoryById("itemSdsVerified").checked =
+    Boolean(item?.sds_verified_at_ms);
+  inventoryById("itemCatalogSource").value = item?.catalog_source || "";
+  inventoryById("itemCatalogVersion").value = item?.catalog_version || "";
+  inventoryById("itemCatalogEntry").value = item?.catalog_entry_no || "";
+  inventoryById("itemRegulatoryReviewed").checked =
+    Boolean(item?.regulatory_reviewed_at_ms);
+  inventoryById("itemDualControl").checked =
+    Boolean(item?.dual_control_required);
+  inventoryById("itemDualReason").value = item?.dual_control_reason || "";
   inventoryById("itemExpiry").value = item?.expires_on || "";
   inventoryById("itemOpened").value = item?.opened_on || "";
   inventoryById("itemPreparedBy").value = item?.prepared_by || "";
@@ -416,6 +562,9 @@ function resetItemForm(item = null) {
   inventoryById("itemNote").value = item?.note || "";
   renderHazardOptions(item?.hazards || []);
   renderControlCategoryOptions(item?.controlled_categories || []);
+  renderChoiceCheckboxes(
+    "itemGhsPictograms", GHS_PICTOGRAMS, item?.ghs_pictograms || []
+  );
   toggleChemicalFields();
   setInventoryStatus("", false, "itemFormStatus");
 }
@@ -436,8 +585,18 @@ function itemFormPayload() {
     max_threshold:optionalNumber("itemMax"),
     external_barcode:inventoryById("itemExternalBarcode").value || null,
     lot_no:inventoryById("itemLot").value || null,
+    source_organization:
+      inventoryById("itemSourceOrganization").value || null,
+    handover_document_no:inventoryById("itemHandoverNo").value || null,
+    handover_document_ref:inventoryById("itemHandoverRef").value || null,
+    received_date:inventoryById("itemReceivedDate").value || null,
+    received_by:inventoryById("itemReceivedBy").value || null,
+    accepted_by:inventoryById("itemAcceptedBy").value || null,
+    regulatory_filing_no:inventoryById("itemFilingNo").value || null,
+    regulatory_filing_ref:inventoryById("itemFilingRef").value || null,
     is_controlled:inventoryById("itemControlled").checked,
     hazardous_status:inventoryById("itemHazardousStatus").value,
+    storage_group:inventoryById("itemStorageGroup").value,
     controlled_categories:[
       ...inventoryById("itemControlledCategories")
         .querySelectorAll("input:checked")
@@ -445,6 +604,20 @@ function itemFormPayload() {
     cas_no:inventoryById("itemCas").value || null,
     spec:inventoryById("itemSpec").value || null,
     sds_url:inventoryById("itemSds").value || null,
+    sds_revision:inventoryById("itemSdsRevision").value || null,
+    sds_verified:inventoryById("itemSdsVerified").checked,
+    catalog_source:inventoryById("itemCatalogSource").value || null,
+    catalog_version:inventoryById("itemCatalogVersion").value || null,
+    catalog_entry_no:inventoryById("itemCatalogEntry").value || null,
+    regulatory_review_confirmed:
+      inventoryById("itemRegulatoryReviewed").checked,
+    dual_control_required:inventoryById("itemDualControl").checked,
+    dual_control_reason:inventoryById("itemDualReason").value || null,
+    ghs_pictograms:[
+      ...inventoryById("itemGhsPictograms")
+        .querySelectorAll("input:checked")
+    ].map(input => input.value),
+    compliance_review:Boolean(inventoryById("itemId").value),
     expiry_date:inventoryById("itemExpiry").value || null,
     opened_date:inventoryById("itemOpened").value || null,
     prepared_by:inventoryById("itemPreparedBy").value || null,
@@ -504,18 +677,48 @@ async function openInventoryDetail(itemId) {
     ["位置",item.location],
     ["负责人",item.owner],
     ["供应商批号",item.supplier_lot],
+    ["来源单位",item.source_organization],
+    ["交付凭证",item.handover_document_no],
+    ["接收/验收",[
+      item.received_by,item.accepted_by
+    ].filter(Boolean).join(" / ")],
+    ["许可/备案",item.regulatory_filing_no],
     ["有效期",item.expires_on],
     ["CAS",item.cas_no],
     ["规格",item.spec],
     ["危险性",(item.hazards || []).join(" / ")],
+    ["GHS 象形图",(item.ghs_pictograms || []).join(" / ")],
+    ["储存组",STORAGE_GROUP_LABELS[item.storage_group]
+      || item.storage_group],
     ["危化品判定",HAZARDOUS_STATUS_LABELS[item.hazardous_status]
       || item.hazardous_status],
     ["特殊管制",(item.controlled_categories || []).join(" / ")],
+    ["目录判定",[
+      item.catalog_source,item.catalog_version,item.catalog_entry_no
+    ].filter(Boolean).join(" / ")],
+    ["SDS 核验",item.sds_verified_at_ms
+      ? `${item.sds_verified_by || "已核验"} · ${
+        new Date(item.sds_verified_at_ms).toLocaleString("zh-CN")
+      }`
+      : "未核验"],
+    ["双人控制",item.dual_control_required
+      ? `是 · ${item.dual_control_reason || "按库位/类别要求"}`
+      : "否"],
     ["登记人",item.created_by],
-    ["SDS",item.sds_url],
     ["开封日期",item.opened_on]
   ].forEach(([label,value]) => appendDetailValue(grid,label,String(value || "—")));
   body.appendChild(grid);
+  if (item.sds_url) {
+    const emergency = textElement(
+      "a", "打开 SDS / 查看泄漏与急救信息", "btn danger"
+    );
+    emergency.href = item.sds_url;
+    emergency.target = "_blank";
+    emergency.rel = "noopener";
+    emergency.style.display = "inline-flex";
+    emergency.style.marginTop = "12px";
+    body.appendChild(emergency);
+  }
   const actions = document.createElement("div");
   actions.className = "toolbar";
   actions.style.marginTop = "14px";
@@ -593,6 +796,10 @@ function openOperation(item, action, label) {
     action === "adjusted" ? item.quantity_remaining : "";
   inventoryById("operationQuantityLabel").textContent =
     action === "adjusted" ? "实际盘点数量" : `数量（${item.unit}）`;
+  inventoryById("operationDualNotice").hidden = !(
+    item.dual_control_required &&
+    ["received","issued","adjusted","disposed"].includes(action)
+  );
   inventoryById("operationNote").value = "";
   setInventoryStatus("", false, "operationStatus");
   inventoryById("inventoryOperationDialog").showModal();
@@ -611,13 +818,23 @@ async function submitOperation(event) {
   if (["received","issued"].includes(action)) payload.quantity = quantity;
   if (action === "adjusted") payload.actual_quantity = quantity;
   try {
-    await inventoryApi(`/api/inventory/items/${itemId}/movements`, {
+    const requiresApproval = !inventoryById("operationDualNotice").hidden;
+    await inventoryApi(
+      requiresApproval
+        ? `/api/inventory/items/${itemId}/movement-approvals`
+        : `/api/inventory/items/${itemId}/movements`,
+      {
       method:"POST", body:JSON.stringify(payload)
-    });
+      }
+    );
     inventoryById("inventoryOperationDialog").close();
     inventoryById("inventoryDetailDialog").close();
     await loadInventory();
-    await openInventoryDetail(itemId);
+    if (requiresApproval) {
+      setInventoryStatus("已提交，等待第二个授权账号确认");
+    } else {
+      await openInventoryDetail(itemId);
+    }
   } catch (error) {
     setInventoryStatus(error.message, true, "operationStatus");
   }
@@ -625,11 +842,28 @@ async function submitOperation(event) {
 
 async function lookupCas() {
   const cas = inventoryById("itemCas").value.trim();
-  setInventoryStatus("正在查询 PubChem…", false, "itemFormStatus");
+  setInventoryStatus(
+    "正在查询 PubChem 和国家危化品目录…",
+    false,
+    "itemFormStatus"
+  );
   try {
-    const result = await inventoryApi(
-      `/api/inventory/pubchem?cas=${encodeURIComponent(cas)}`
-    );
+    const [pubchemResult,regulatoryResult] = await Promise.allSettled([
+      inventoryApi(`/api/inventory/pubchem?cas=${encodeURIComponent(cas)}`),
+      inventoryApi(
+        `/api/inventory/regulatory-lookup?cas=${encodeURIComponent(cas)}`
+      )
+    ]);
+    if (
+      pubchemResult.status === "rejected" &&
+      regulatoryResult.status === "rejected"
+    ) {
+      throw regulatoryResult.reason;
+    }
+    const result = pubchemResult.status === "fulfilled"
+      ? pubchemResult.value : {};
+    const regulatory = regulatoryResult.status === "fulfilled"
+      ? regulatoryResult.value : null;
     if (!inventoryById("itemName").value) {
       inventoryById("itemName").value = result.name || "";
     }
@@ -646,7 +880,42 @@ async function lookupCas() {
         ...(result.hazards || [])
       ])
     ]);
-    setInventoryStatus("已填入可识别的化学品信息", false, "itemFormStatus");
+    if (regulatory) {
+      inventoryById("itemHazardousStatus").value =
+        regulatory.hazardous_status;
+      inventoryById("itemCatalogSource").value =
+        regulatory.catalog_source || "";
+      inventoryById("itemCatalogVersion").value =
+        regulatory.catalog_version || "";
+      inventoryById("itemCatalogEntry").value =
+        (regulatory.catalog_entries || [])
+          .map(entry => entry.entry_no).join(",");
+      renderChoiceCheckboxes(
+        "itemGhsPictograms",
+        GHS_PICTOGRAMS,
+        [
+          ...new Set([
+            ...[...inventoryById("itemGhsPictograms")
+              .querySelectorAll("input:checked")]
+              .map(input => input.value),
+            ...(regulatory.suggested_ghs_pictograms || [])
+          ])
+        ]
+      );
+      const storageSuggestions = regulatory.suggested_storage_groups || [];
+      if (
+        inventoryById("itemStorageGroup").value === "unassessed" &&
+        storageSuggestions.length === 1
+      ) {
+        inventoryById("itemStorageGroup").value = storageSuggestions[0];
+      }
+      inventoryById("itemRegulatoryReviewed").checked = false;
+    }
+    setInventoryStatus(
+      regulatory?.warning || "已读取 PubChem；国家目录暂时无法访问",
+      Boolean(regulatory && !regulatory.matched),
+      "itemFormStatus"
+    );
   } catch (error) {
     setInventoryStatus(error.message, true, "itemFormStatus");
   }
@@ -660,6 +929,82 @@ async function acceptInventoryScan(code) {
     throw new Error("该二维码不是库存物品标签");
   }
   await openInventoryDetail(result.material.id);
+}
+
+function resetLocationForm(location = null) {
+  inventoryById("locationForm").reset();
+  inventoryById("locationId").value = location?.id || "";
+  inventoryById("locationFormTitle").textContent =
+    location ? "编辑合规库位" : "配置合规库位";
+  const existing = inventoryById("locationExisting");
+  existing.textContent = "";
+  const createOption = document.createElement("option");
+  createOption.value = "";
+  createOption.textContent = "新建库位";
+  existing.appendChild(createOption);
+  inventoryState.locations.forEach(item => {
+    const option = document.createElement("option");
+    option.value = String(item.id);
+    option.textContent = `${item.display_name}（${item.location_code}）`;
+    existing.appendChild(option);
+  });
+  existing.value = location ? String(location.id) : "";
+  inventoryById("locationCode").value = location?.location_code || "";
+  inventoryById("locationCode").disabled = Boolean(location);
+  inventoryById("locationName").value = location?.display_name || "";
+  inventoryById("locationType").value =
+    location?.location_type || "chemical_cabinet";
+  inventoryById("locationCondition").value =
+    location?.storage_condition || "";
+  inventoryById("locationDualControl").checked =
+    Boolean(location?.requires_dual_control);
+  inventoryById("locationComplianceNote").value =
+    location?.compliance_note || "";
+  renderChoiceCheckboxes(
+    "locationAllowedGroups",
+    Object.keys(STORAGE_GROUP_LABELS).filter(value => value !== "unassessed"),
+    location?.allowed_storage_groups || []
+  );
+  renderChoiceCheckboxes(
+    "locationPhysicalControls",
+    PHYSICAL_CONTROLS,
+    location?.physical_controls || []
+  );
+  setInventoryStatus("", false, "locationFormStatus");
+}
+
+async function submitLocationForm(event) {
+  event.preventDefault();
+  const checked = hostId => [
+    ...inventoryById(hostId).querySelectorAll("input:checked")
+  ].map(input => input.value);
+  const locationId = inventoryById("locationId").value;
+  try {
+    await inventoryApi(
+      locationId
+        ? `/api/storage-locations/${locationId}`
+        : "/api/storage-locations",
+      {
+      method:locationId ? "PATCH" : "POST",
+      body:JSON.stringify({
+        location_code:inventoryById("locationCode").value,
+        display_name:inventoryById("locationName").value,
+        location_type:inventoryById("locationType").value,
+        storage_condition:inventoryById("locationCondition").value || null,
+        allowed_storage_groups:checked("locationAllowedGroups"),
+        physical_controls:checked("locationPhysicalControls"),
+        requires_dual_control:
+          inventoryById("locationDualControl").checked,
+        compliance_note:
+          inventoryById("locationComplianceNote").value || null
+      })
+    });
+    inventoryById("locationFormDialog").close();
+    await loadInventory();
+    setInventoryStatus("合规库位已保存");
+  } catch (error) {
+    setInventoryStatus(error.message, true, "locationFormStatus");
+  }
 }
 
 function wireInventoryEvents() {
@@ -709,6 +1054,19 @@ function wireInventoryEvents() {
     resetItemForm();
     inventoryById("itemFormDialog").showModal();
   });
+  inventoryById("openLocationForm").addEventListener("click", () => {
+    resetLocationForm();
+    inventoryById("locationFormDialog").showModal();
+  });
+  inventoryById("locationExisting").addEventListener("change", event => {
+    const selected = inventoryState.locations.find(
+      location => String(location.id) === event.currentTarget.value
+    );
+    resetLocationForm(selected || null);
+  });
+  inventoryById("locationForm").addEventListener(
+    "submit", submitLocationForm
+  );
   inventoryById("openInventoryScanner").addEventListener("click", () => {
     PuricoreScanner.open({onResult:acceptInventoryScan}).catch(showInventoryError);
   });
@@ -720,6 +1078,22 @@ function wireInventoryEvents() {
     "change", toggleChemicalFields
   );
   inventoryById("lookupCas").addEventListener("click", lookupCas);
+  [
+    "itemCas",
+    "itemHazardousStatus",
+    "itemCatalogSource",
+    "itemCatalogVersion",
+    "itemCatalogEntry"
+  ].forEach(id => {
+    inventoryById(id).addEventListener("input", () => {
+      inventoryById("itemRegulatoryReviewed").checked = false;
+    });
+  });
+  ["itemSds","itemSdsRevision"].forEach(id => {
+    inventoryById(id).addEventListener("input", () => {
+      inventoryById("itemSdsVerified").checked = false;
+    });
+  });
   document.querySelectorAll("[data-close]").forEach(button => {
     button.addEventListener("click", () =>
       inventoryById(button.dataset.close).close()
@@ -737,6 +1111,12 @@ function wireInventoryEvents() {
 wireInventoryEvents();
 renderHazardOptions();
 renderControlCategoryOptions();
+renderChoiceCheckboxes("itemGhsPictograms", GHS_PICTOGRAMS);
+renderChoiceCheckboxes(
+  "locationAllowedGroups",
+  Object.keys(STORAGE_GROUP_LABELS).filter(value => value !== "unassessed")
+);
+renderChoiceCheckboxes("locationPhysicalControls", PHYSICAL_CONTROLS);
 loadInventory().then(async () => {
   const scanned = new URLSearchParams(location.search).get("scan");
   if (scanned) await acceptInventoryScan(scanned);

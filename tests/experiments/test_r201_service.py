@@ -372,9 +372,12 @@ def test_scanned_material_container_is_decremented_and_audited():
             "external_barcode": "6901234567890",
             "material_name": "TEOS",
             "supplier_lot": "SUP-01",
-            "quantity_remaining": 20,
-            "unit": "mL",
-            "created_by": "张三",
+                "quantity_remaining": 20,
+                "unit": "mL",
+                "hazardous_status": "not_listed",
+                "storage_group": "general_chemical",
+                "regulatory_review_confirmed": True,
+                "created_by": "张三",
             "client_event_id": "register-material-1",
         }
     )
@@ -474,6 +477,9 @@ def test_material_confirmation_rolls_back_when_inventory_is_insufficient():
             "supplier_lot": "LOW-01",
             "quantity_remaining": 2,
             "unit": "mL",
+            "hazardous_status": "not_listed",
+            "storage_group": "general_chemical",
+            "regulatory_review_confirmed": True,
             "created_by": "张三",
             "client_event_id": "register-material-low",
         }

@@ -17,6 +17,11 @@
       isActive: path => path === "/inventory",
     },
     {
+      href: "/hazardous-waste",
+      label: "危废管理",
+      isActive: path => path === "/hazardous-waste",
+    },
+    {
       href: "/measurement-station",
       label: "粘度工位",
       isActive: path => path === "/measurement-station",

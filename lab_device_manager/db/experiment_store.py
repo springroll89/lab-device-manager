@@ -867,6 +867,38 @@ class ExperimentStore:
                     ).fetchone()
                     if container is None:
                         raise RuntimeError("原材料容器不存在")
+                    if container["category"] == "chemical":
+                        if container["hazardous_status"] in {
+                            "not_assessed",
+                            "pending_review",
+                        }:
+                            raise RuntimeError(
+                                "原材料危化品判定尚未完成，禁止投料"
+                            )
+                        if (
+                            container["hazardous_status"] == "not_listed"
+                            and not container["regulatory_reviewed_at_ms"]
+                        ):
+                            raise RuntimeError(
+                                "原材料仅完成 CAS 目录查询，尚未完成法规复核"
+                            )
+                        if (
+                            container["hazardous_status"] == "listed"
+                            and (
+                                not container["sds_url"]
+                                or not container["sds_verified_at_ms"]
+                                or container["storage_group"] == "unassessed"
+                                or not container["storage_location_id"]
+                            )
+                        ):
+                            raise RuntimeError(
+                                "原材料 SDS、储存组或合规库位资料不完整"
+                            )
+                        if container["dual_control_required"]:
+                            raise RuntimeError(
+                                "该原材料需要双人收发，不能在实验步骤中直接扣减；"
+                                "请先完成库存双人领用流程"
+                            )
                     if container["status"] != "available":
                         raise RuntimeError(
                             f"原材料容器 {container['container_code']} 当前不可用"

@@ -44,6 +44,9 @@ from lab_device_manager.experiments.service import (
 )
 from lab_device_manager.inventory import InventoryError, InventoryService
 from lab_device_manager.inventory.pubchem import lookup_chemical
+from lab_device_manager.inventory.regulatory_catalog import (
+    lookup_hazardous_catalog,
+)
 from lab_device_manager.web.auth import AuthManager
 from lab_device_manager.web.barcode import (
     BarcodeImageError,
@@ -923,6 +926,13 @@ def create_app(
     def materials_page():
         return send_from_directory(app.static_folder, "materials.html")
 
+    @app.get("/hazardous-waste")
+    @login_required
+    def hazardous_waste_page():
+        return send_from_directory(
+            app.static_folder, "hazardous-waste.html"
+        )
+
     def _r201_error(exc: Exception):
         if isinstance(exc, R201Error):
             payload = {"error": str(exc)}
@@ -1224,7 +1234,7 @@ def create_app(
 
     @app.get("/api/storage-locations")
     def api_storage_locations():
-        return jsonify(r201.list_storage_locations())
+        return jsonify(inventory.list_storage_locations())
 
     @app.get("/api/storage-locations/labels")
     def api_print_storage_location_labels():
@@ -1244,13 +1254,30 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/storage-locations")
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
     def api_create_storage_location():
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
         try:
-            return jsonify(r201.create_storage_location(body)), 201
-        except R201Error as exc:
-            return _r201_error(exc)
+            return jsonify(inventory.save_storage_location(body)), 201
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.patch("/api/storage-locations/<int:location_id>")
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_update_storage_location(location_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        try:
+            return jsonify(
+                inventory.save_storage_location(
+                    body, location_id=location_id
+                )
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
 
     @app.post("/api/storage-locations/<int:location_id>/print")
     def api_request_location_label(location_id):
@@ -1389,11 +1416,11 @@ def create_app(
     @auth.roles_required("super_admin", "supervisor")
     @auth.csrf_required
     def api_update_inventory_item(item_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
         try:
             return jsonify(
-                inventory.update_item(
-                    item_id, dict(request.get_json(silent=True) or {})
-                )
+                inventory.update_item(item_id, body)
             )
         except InventoryError as exc:
             return _inventory_error(exc)
@@ -1404,6 +1431,15 @@ def create_app(
             return jsonify(lookup_chemical(request.args.get("cas", "")))
         except ValueError as exc:
             return _inventory_error(InventoryError(str(exc), 404))
+
+    @app.get("/api/inventory/regulatory-lookup")
+    def api_inventory_regulatory_lookup():
+        try:
+            return jsonify(
+                lookup_hazardous_catalog(request.args.get("cas", ""))
+            )
+        except ValueError as exc:
+            return _inventory_error(InventoryError(str(exc)))
 
     @app.post("/api/inventory/items/<int:item_id>/movements")
     @auth.csrf_required
@@ -1434,6 +1470,52 @@ def create_app(
         except InventoryError as exc:
             return _inventory_error(exc)
 
+    @app.post(
+        "/api/inventory/items/<int:item_id>/movement-approvals"
+    )
+    @auth.csrf_required
+    def api_request_inventory_movement_approval(item_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        body.setdefault(
+            "client_event_id",
+            f"inventory-approval-{item_id}-{time.time_ns()}",
+        )
+        try:
+            approval = inventory.request_movement_approval(item_id, body)
+            return jsonify({"approval": approval}), 202
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/movement-approvals")
+    @auth.roles_required("super_admin", "supervisor")
+    def api_inventory_movement_approvals():
+        try:
+            return jsonify(
+                {
+                    "approvals": inventory.list_movement_approvals(
+                        request.args.get("status") or "pending"
+                    )
+                }
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post(
+        "/api/inventory/movement-approvals/<int:approval_id>/decision"
+    )
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_decide_inventory_movement_approval(approval_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        try:
+            return jsonify(
+                inventory.decide_movement_approval(approval_id, body)
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
     @app.get("/api/inventory/movements")
     def api_inventory_movements():
         try:
@@ -1442,6 +1524,199 @@ def create_app(
             if isinstance(exc, InventoryError):
                 return _inventory_error(exc)
             return _inventory_error(InventoryError("分页参数无效"))
+
+    @app.get("/api/inventory/hazardous-waste")
+    def api_hazardous_waste_list():
+        try:
+            return jsonify(
+                {
+                    "waste": inventory.list_hazardous_waste(
+                        request.args.get("status") or ""
+                    )
+                }
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post("/api/inventory/hazardous-waste")
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_create_hazardous_waste():
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        body.setdefault(
+            "client_event_id", f"hazardous-waste-{time.time_ns()}"
+        )
+        try:
+            return jsonify(inventory.create_hazardous_waste(body)), 201
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/hazardous-waste/<int:waste_id>")
+    def api_hazardous_waste_detail(waste_id):
+        try:
+            return jsonify(inventory.get_hazardous_waste(waste_id))
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post(
+        "/api/inventory/hazardous-waste/<int:waste_id>/events"
+    )
+    @auth.csrf_required
+    def api_hazardous_waste_event(waste_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        body.setdefault(
+            "client_event_id",
+            f"hazardous-waste-event-{waste_id}-{time.time_ns()}",
+        )
+        action = str(body.get("action") or "")
+        user = auth.current_user() or {}
+        if (
+            action in {"seal", "complete_transfer"}
+            and user.get("role") not in {"super_admin", "supervisor"}
+        ):
+            return jsonify({"error": "forbidden"}), 403
+        try:
+            return jsonify(
+                inventory.update_hazardous_waste_state(
+                    waste_id, action, body
+                )
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.post(
+        "/api/inventory/hazardous-waste/<int:waste_id>/transfers"
+    )
+    @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
+    def api_hazardous_waste_transfer(waste_id):
+        body = dict(request.get_json(silent=True) or {})
+        _stamp_actor(body)
+        body.setdefault(
+            "client_event_id",
+            f"hazardous-waste-transfer-{waste_id}-{time.time_ns()}",
+        )
+        try:
+            return jsonify(
+                inventory.register_hazardous_waste_transfer(waste_id, body)
+            ), 201
+        except InventoryError as exc:
+            return _inventory_error(exc)
+
+    @app.get("/api/inventory/hazardous-waste.csv")
+    def api_hazardous_waste_csv():
+        try:
+            waste_rows = inventory.list_hazardous_waste(
+                request.args.get("status") or ""
+            )
+        except InventoryError as exc:
+            return _inventory_error(exc)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "危废编号",
+                "危废名称",
+                "国家危废类别/代码",
+                "物理形态",
+                "危险特性",
+                "主要成分",
+                "数量",
+                "单位",
+                "包装容器",
+                "暂存库位",
+                "状态",
+                "开始收集时间",
+                "封口时间",
+                "转移完成时间",
+                "登记人",
+                "国家电子联单编号",
+                "承运单位及资质",
+                "接收处置单位及许可证",
+                "利用/处置方式",
+            ]
+        )
+        for waste in waste_rows:
+            detail = inventory.get_hazardous_waste(waste["id"])
+            transfer = (
+                detail["transfers"][0] if detail["transfers"] else {}
+            )
+            writer.writerow(
+                [
+                    _csv_safe(waste["waste_code"]),
+                    _csv_safe(waste["waste_name"]),
+                    _csv_safe(
+                        " / ".join(
+                            part
+                            for part in (
+                                waste["waste_category_code"],
+                                waste.get("waste_category_name"),
+                            )
+                            if part
+                        )
+                    ),
+                    waste["physical_state"],
+                    _csv_safe(
+                        " / ".join(waste["hazard_characteristics"])
+                    ),
+                    _csv_safe(waste["composition"]),
+                    waste["quantity"],
+                    _csv_safe(waste["unit"]),
+                    _csv_safe(waste["package_type"]),
+                    _csv_safe(
+                        f"{waste['location_name']} "
+                        f"({waste['location_code']})"
+                    ),
+                    waste["status"],
+                    fmt_ts_ms(waste["started_at_ms"]),
+                    (
+                        fmt_ts_ms(waste["sealed_at_ms"])
+                        if waste.get("sealed_at_ms")
+                        else ""
+                    ),
+                    (
+                        fmt_ts_ms(waste["transferred_at_ms"])
+                        if waste.get("transferred_at_ms")
+                        else ""
+                    ),
+                    _csv_safe(waste["created_by"]),
+                    _csv_safe(
+                        transfer.get("national_manifest_no") or ""
+                    ),
+                    _csv_safe(
+                        " / ".join(
+                            part
+                            for part in (
+                                transfer.get("transporter_name"),
+                                transfer.get("transporter_license_no"),
+                            )
+                            if part
+                        )
+                    ),
+                    _csv_safe(
+                        " / ".join(
+                            part
+                            for part in (
+                                transfer.get("recipient_name"),
+                                transfer.get("recipient_permit_no"),
+                            )
+                            if part
+                        )
+                    ),
+                    _csv_safe(transfer.get("disposal_method") or ""),
+                ]
+            )
+        return Response(
+            "\ufeff" + buffer.getvalue(),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename=puricore-hazardous-waste.csv"
+                )
+            },
+        )
 
     @app.get("/api/inventory/movements.csv")
     def api_inventory_movements_csv():
@@ -1473,6 +1748,8 @@ def create_app(
                 "结余",
                 "单位",
                 "操作人",
+                "第二确认人",
+                "确认时间",
                 "实验批次",
                 "备注",
             ]
@@ -1490,6 +1767,12 @@ def create_app(
                     movement["quantity_after"],
                     _csv_safe(movement.get("unit") or ""),
                     _csv_safe(movement["actor"]),
+                    _csv_safe(movement.get("approved_by") or ""),
+                    (
+                        fmt_ts_ms(movement["approved_at_ms"])
+                        if movement.get("approved_at_ms")
+                        else ""
+                    ),
                     _csv_safe(movement.get("batch_id") or ""),
                     _csv_safe(movement.get("note") or ""),
                 ]
@@ -1529,6 +1812,24 @@ def create_app(
                 "特殊管制",
                 "CAS号",
                 "危险性",
+                "GHS图示",
+                "储存组",
+                "来源单位",
+                "交付/领用凭证编号",
+                "交付凭证引用",
+                "接收时间",
+                "接收人",
+                "验收人",
+                "来源方许可/备案编号",
+                "来源方许可/备案凭证",
+                "目录判定来源",
+                "目录版本",
+                "目录序号",
+                "SDS链接",
+                "SDS版本",
+                "SDS核验人",
+                "双人控制",
+                "双人控制依据",
             ]
         )
         for item in items:
@@ -1551,6 +1852,30 @@ def create_app(
                     ),
                     _csv_safe(item.get("cas_no") or ""),
                     _csv_safe(" / ".join(item.get("hazards") or [])),
+                    _csv_safe(
+                        " / ".join(item.get("ghs_pictograms") or [])
+                    ),
+                    item.get("storage_group") or "",
+                    _csv_safe(item.get("source_organization") or ""),
+                    _csv_safe(item.get("handover_document_no") or ""),
+                    _csv_safe(item.get("handover_document_ref") or ""),
+                    (
+                        fmt_ts_ms(item["received_at_ms"])
+                        if item.get("received_at_ms")
+                        else ""
+                    ),
+                    _csv_safe(item.get("received_by") or ""),
+                    _csv_safe(item.get("accepted_by") or ""),
+                    _csv_safe(item.get("regulatory_filing_no") or ""),
+                    _csv_safe(item.get("regulatory_filing_ref") or ""),
+                    _csv_safe(item.get("catalog_source") or ""),
+                    _csv_safe(item.get("catalog_version") or ""),
+                    _csv_safe(item.get("catalog_entry_no") or ""),
+                    _csv_safe(item.get("sds_url") or ""),
+                    _csv_safe(item.get("sds_revision") or ""),
+                    _csv_safe(item.get("sds_verified_by") or ""),
+                    "是" if item.get("dual_control_required") else "否",
+                    _csv_safe(item.get("dual_control_reason") or ""),
                 ]
             )
         return Response(

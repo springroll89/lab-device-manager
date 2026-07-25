@@ -43,6 +43,7 @@
     <div class="toolbar">
       <button id="openInventoryScanner" class="btn primary" type="button">扫码</button>
       <button id="openItemForm" class="btn primary" type="button">新增物品</button>
+      <button id="openLocationForm" class="btn" type="button">配置合规库位</button>
       <a id="printInventoryLabels" class="btn" href="#" target="_blank" rel="noopener">打印当前列表标签</a>
       <a id="printStorageLocationLabels" class="btn" href="#" target="_blank" rel="noopener">打印库位标签</a>
       <a class="btn" href="/api/inventory/export.csv">导出 CSV</a>
@@ -84,6 +85,12 @@
         <button id="inventoryAuditNext" class="btn" type="button">下一页</button>
       </div>
     </section>
+
+    <section id="inventoryApprovalPanel" class="panel" hidden>
+      <div class="panel-head"><h2>待双人确认</h2><span id="inventoryApprovalCount" class="muted">0 项</span></div>
+      <p class="muted">申请人不能复核自己的操作；只有实验室主管或最高管理员可以作为第二人确认。</p>
+      <div id="inventoryApprovalRows"></div>
+    </section>
   </main>
 
   <dialog id="itemFormDialog">
@@ -94,19 +101,38 @@
       <div class="field"><label for="itemName">名称</label><input id="itemName" required></div>
       <div class="field"><label for="itemQuantity">初始数量</label><input id="itemQuantity" type="number" min="0" step="any" required></div>
       <div class="field"><label for="itemUnit">单位</label><input id="itemUnit" required placeholder="mL、g、瓶、盒"></div>
-      <div class="field"><label for="itemLocation">存放位置</label><input id="itemLocation"></div>
+      <div class="field"><label for="itemLocation">合规库位</label><input id="itemLocation" list="inventoryLocationOptions" placeholder="请选择已配置库位编码"><datalist id="inventoryLocationOptions"></datalist></div>
       <div class="field"><label for="itemOwner">负责人</label><input id="itemOwner"></div>
       <div class="field"><label for="itemMin">库存下限</label><input id="itemMin" type="number" min="0" step="any"></div>
       <div class="field"><label for="itemMax">库存上限</label><input id="itemMax" type="number" min="0" step="any"></div>
       <div class="field"><label for="itemExternalBarcode">供应商条码</label><input id="itemExternalBarcode"></div>
       <div class="field"><label for="itemLot">供应商批号</label><input id="itemLot"></div>
+      <p class="full muted">本系统不处理采购申请或下单。由合作高校采购的物料，从交接验收入库开始记录；许可/备案凭证由实际采购或交付单位提供时一并关联。</p>
+      <div class="field"><label for="itemSourceOrganization">来源单位（合作高校/交付单位）</label><input id="itemSourceOrganization" placeholder="合作大学/交付单位"></div>
+      <div class="field"><label for="itemHandoverNo">交付/领用凭证编号</label><input id="itemHandoverNo"></div>
+      <div class="field"><label for="itemHandoverRef">交付凭证附件引用</label><input id="itemHandoverRef" placeholder="文件名、共享盘路径或档案号"></div>
+      <div class="field"><label for="itemReceivedDate">接收日期</label><input id="itemReceivedDate" type="date"></div>
+      <div class="field"><label for="itemReceivedBy">接收人</label><input id="itemReceivedBy"></div>
+      <div class="field"><label for="itemAcceptedBy">验收人</label><input id="itemAcceptedBy"></div>
+      <div class="field"><label for="itemFilingNo">来源方许可/备案编号（如适用）</label><input id="itemFilingNo"></div>
+      <div class="field"><label for="itemFilingRef">来源方许可/备案凭证引用</label><input id="itemFilingRef"></div>
       <label class="full inline"><input id="itemControlled" type="checkbox" style="width:auto;min-height:auto">管制类物品（领用自动记录账号）</label>
       <section id="chemicalFields" class="full form-grid">
         <div class="field"><label for="itemCas">CAS 号</label><div class="inline"><input id="itemCas"><button id="lookupCas" class="btn small" type="button">自动识别</button></div></div>
         <div class="field"><label for="itemSpec">规格/包装</label><input id="itemSpec"></div>
-        <div class="field"><label for="itemHazardousStatus">危化品判定</label><select id="itemHazardousStatus"><option value="not_assessed">未评估</option><option value="listed">列入危险化学品目录</option><option value="not_listed">按 CAS 未在目录检出</option><option value="pending_review">待 SDS / 法规核验</option></select></div>
+        <div class="field"><label for="itemHazardousStatus">危化品判定</label><select id="itemHazardousStatus"><option value="not_assessed">未评估</option><option value="listed">列入危险化学品目录</option><option value="not_listed">CAS 未在目录匹配（仍需复核）</option><option value="pending_review">待 SDS / 法规核验</option></select></div>
+        <div class="field"><label for="itemStorageGroup">储存组</label><select id="itemStorageGroup"><option value="unassessed">未判定</option><option value="general_chemical">一般化学品</option><option value="flammable">易燃品</option><option value="oxidizer">氧化剂</option><option value="acid">酸</option><option value="alkali">碱</option><option value="toxic">有毒品</option><option value="water_reactive">遇水反应</option><option value="pyrophoric">自燃品</option><option value="compressed_gas">压缩气体</option><option value="refrigerated">冷藏品</option></select></div>
         <div class="field full"><span class="muted">特殊管制类别</span><div id="itemControlledCategories" class="hazards"></div></div>
-        <div class="field"><label for="itemSds">SDS 链接</label><input id="itemSds" type="url"></div>
+        <div class="field"><label for="itemSds">供应商 SDS 链接</label><input id="itemSds" type="url"></div>
+        <div class="field"><label for="itemSdsRevision">SDS 修订日期/版本</label><input id="itemSdsRevision"></div>
+        <label class="full inline"><input id="itemSdsVerified" type="checkbox" style="width:auto;min-height:auto">我已核对该瓶产品对应的供应商 SDS</label>
+        <div class="field"><label for="itemCatalogSource">判定来源</label><input id="itemCatalogSource" placeholder="危险化学品目录"></div>
+        <div class="field"><label for="itemCatalogVersion">目录版本</label><input id="itemCatalogVersion" placeholder="2015版（含2022调整）"></div>
+        <div class="field"><label for="itemCatalogEntry">目录序号</label><input id="itemCatalogEntry"></div>
+        <label class="full inline"><input id="itemRegulatoryReviewed" type="checkbox" style="width:auto;min-height:auto">我已按 CAS、浓度/混合物规则和 SDS 完成法规判定</label>
+        <label class="full inline"><input id="itemDualControl" type="checkbox" style="width:auto;min-height:auto">领用、入库、盘点和处置必须由第二个账号复核</label>
+        <div class="field full"><label for="itemDualReason">双人控制原因</label><input id="itemDualReason" placeholder="剧毒、重大危险源、药品类易制毒或内部制度"></div>
+        <div class="field full"><span class="muted">GHS 象形图编号</span><div id="itemGhsPictograms" class="hazards"></div></div>
         <div class="field"><label for="itemExpiry">有效期</label><input id="itemExpiry" type="date"></div>
         <div class="field"><label for="itemOpened">开封日期</label><input id="itemOpened" type="date"></div>
         <div class="field"><label for="itemPreparedBy">配制人</label><input id="itemPreparedBy"></div>
@@ -119,6 +145,24 @@
     </form>
   </dialog>
 
+  <dialog id="locationFormDialog">
+    <div class="dialog-head"><h2 id="locationFormTitle">配置合规库位</h2><button class="btn small" data-close="locationFormDialog" type="button">关闭</button></div>
+    <form id="locationForm" class="form-grid">
+      <input id="locationId" type="hidden">
+      <div class="field full"><label for="locationExisting">编辑已有库位（新建时留空）</label><select id="locationExisting"><option value="">新建库位</option></select></div>
+      <div class="field"><label for="locationCode">库位编码</label><input id="locationCode" required placeholder="CAB-ACID-01"></div>
+      <div class="field"><label for="locationName">库位名称</label><input id="locationName" required placeholder="酸性试剂柜 1"></div>
+      <div class="field"><label for="locationType">库位类型</label><select id="locationType"><option value="chemical_cabinet">普通化学品柜</option><option value="flammable_cabinet">易燃品柜</option><option value="acid_alkali_cabinet">酸/碱柜（按独立隔间建库位）</option><option value="toxic_cabinet">有毒品柜</option><option value="controlled_cabinet">特殊管制柜</option><option value="refrigerator">冰箱/冷藏柜</option><option value="waste_storage">危废暂存区</option><option value="general">一般库位</option></select></div>
+      <div class="field"><label for="locationCondition">储存条件</label><input id="locationCondition" placeholder="阴凉、通风、2–8℃等"></div>
+      <div class="field full"><span class="muted">允许储存组（酸和碱等禁忌组请建立独立库位）</span><div id="locationAllowedGroups" class="hazards"></div></div>
+      <div class="field full"><span class="muted">现场已落实的物理措施</span><div id="locationPhysicalControls" class="hazards"></div></div>
+      <label class="full inline"><input id="locationDualControl" type="checkbox" style="width:auto;min-height:auto">该库位实行双人控制</label>
+      <div class="field full"><label for="locationComplianceNote">核验备注</label><textarea id="locationComplianceNote" placeholder="柜体编号、隔间、现场核验日期等"></textarea></div>
+      <div id="locationFormStatus" class="status full"></div>
+      <div class="dialog-actions full"><button class="btn primary" type="submit">保存库位</button><button class="btn" data-close="locationFormDialog" type="button">取消</button></div>
+    </form>
+  </dialog>
+
   <dialog id="inventoryDetailDialog">
     <div class="dialog-head"><h2 id="inventoryDetailTitle">物品详情</h2><button class="btn small" data-close="inventoryDetailDialog" type="button">关闭</button></div>
     <div id="inventoryDetailBody"></div>
@@ -128,6 +172,7 @@
     <div class="dialog-head"><h2 id="inventoryOperationTitle">库存操作</h2><button class="btn small" data-close="inventoryOperationDialog" type="button">关闭</button></div>
     <form id="inventoryOperationForm">
       <input id="operationItemId" type="hidden"><input id="operationAction" type="hidden">
+      <p id="operationDualNotice" class="badge controlled" hidden>提交后不会立即改库存，需要第二个授权账号确认。</p>
       <div id="operationQuantityField" class="field"><label id="operationQuantityLabel" for="operationQuantity">数量</label><input id="operationQuantity" type="number" min="0" step="any"></div>
       <div class="field"><label for="operationNote">备注</label><textarea id="operationNote"></textarea></div>
       <div id="operationStatus" class="status"></div>

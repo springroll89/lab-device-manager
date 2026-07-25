@@ -29,17 +29,30 @@ def _create_payload(**overrides):
         "category": "chemical",
         "quantity": 10,
         "unit": "L",
-        "location": "危化品柜 A1",
+        "location": "CAB-FLAM-01",
         "owner": "实验室",
         "min_threshold": 3,
         "max_threshold": 20,
         "is_controlled": True,
         "hazardous_status": "listed",
-        "controlled_categories": ["易制毒第三类"],
+        "controlled_categories": ["内部受控"],
         "cas_no": "64-17-5",
         "spec": "AR 99.7%",
         "hazards": ["易燃"],
+        "ghs_pictograms": ["GHS02"],
+        "storage_group": "flammable",
         "sds_url": "https://example.test/sds/ethanol",
+        "sds_revision": "2026-01-01",
+        "sds_verified": True,
+        "catalog_source": "危险化学品目录",
+        "catalog_version": "2015版（含2022调整）",
+        "catalog_entry_no": "2568",
+        "regulatory_review_confirmed": True,
+        "source_organization": "合作大学",
+        "handover_document_no": "HD-202607-001",
+        "received_date": "2026-07-25",
+        "received_by": "接收人甲",
+        "accepted_by": "验收人乙",
         "lot_no": "LOT-202607",
         "expiry_date": "2027-07-01",
         "client_event_id": f"create-{time.time_ns()}",
@@ -49,6 +62,18 @@ def _create_payload(**overrides):
 
 
 def _create(client, **overrides):
+    if not client.get("/api/storage-locations").get_json():
+        location = client.post(
+            "/api/storage-locations",
+            json={
+                "location_code": "CAB-FLAM-01",
+                "display_name": "易燃液体柜 1",
+                "location_type": "flammable_cabinet",
+                "allowed_storage_groups": ["flammable"],
+                "physical_controls": ["通风", "防泄漏托盘", "防火"],
+            },
+        )
+        assert location.status_code == 201
     body = _create_payload(**overrides)
     response = client.post("/api/inventory/items", json=body)
     assert response.status_code == 201
@@ -121,9 +146,7 @@ def test_inventory_filters_dashboard_detail_and_audit():
     assert summary.get_json()["expiring"] == 1
     assert detail.get_json()["item"]["hazards"] == ["易燃"]
     assert detail.get_json()["item"]["hazardous_status"] == "listed"
-    assert detail.get_json()["item"]["controlled_categories"] == [
-        "易制毒第三类"
-    ]
+    assert detail.get_json()["item"]["controlled_categories"] == ["内部受控"]
     assert audit.get_json()["movements"][0]["action"] == "registered"
 
 
@@ -168,6 +191,10 @@ def test_inventory_issue_adjust_and_csv_export():
     rows = list(csv.DictReader(io.StringIO(exported.data.decode("utf-8-sig"))))
     assert rows[0]["系统编号"] == item["container_code"]
     assert rows[0]["当前库存"] == "4.0"
+    assert rows[0]["来源单位"] == "合作大学"
+    assert rows[0]["交付/领用凭证编号"] == "HD-202607-001"
+    assert rows[0]["SDS核验人"] == "测试管理员"
+    assert "来源方许可/备案编号" in rows[0]
 
 
 def test_inventory_validates_category_units_dates_and_urls():
@@ -238,11 +265,22 @@ def test_inventory_item_can_be_edited_without_changing_identity_or_balance():
     client = app.test_client()
     item = _create(client, quantity=8)
 
+    location = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CAB-FLAM-02",
+            "display_name": "易燃液体柜 2",
+            "location_type": "flammable_cabinet",
+            "allowed_storage_groups": ["flammable"],
+            "physical_controls": ["通风", "防泄漏托盘", "防火"],
+        },
+    )
+    assert location.status_code == 201
     response = client.patch(
         f"/api/inventory/items/{item['id']}",
         json={
             "name": "无水乙醇（新供应商）",
-            "location": "危化品柜 B2",
+            "location": "CAB-FLAM-02",
             "min_threshold": 2,
             "max_threshold": 12,
             "hazards": ["易燃", "有害/刺激"],
@@ -256,7 +294,7 @@ def test_inventory_item_can_be_edited_without_changing_identity_or_balance():
     assert updated["container_code"] == item["container_code"]
     assert updated["quantity_remaining"] == 8
     assert updated["material_name"] == "无水乙醇（新供应商）"
-    assert updated["location"] == "危化品柜 B2"
+    assert updated["location"] == "CAB-FLAM-02"
     assert updated["hazards"] == ["易燃", "有害/刺激"]
     assert updated["hazardous_status"] == "pending_review"
     assert updated["controlled_categories"] == ["内部受控"]
@@ -414,8 +452,284 @@ def test_inventory_audit_and_disposal_exports_preserve_operational_records():
     assert filtered["movements"][0]["client_event_id"] == "export-issue"
     assert audit_csv.status_code == 200
     assert "操作类型".encode() in audit_csv.data
+    assert "第二确认人".encode() in audit_csv.data
     assert "实验领用".encode() in audit_csv.data
     assert disposal_csv.status_code == 200
     disposal_text = disposal_csv.data.decode("utf-8-sig")
     assert "名称,危险性,主要成分,负责人,数量,单位,位置" in disposal_text
     assert "'=酸性废液" in disposal_text
+
+
+def test_hazardous_item_is_blocked_until_sds_location_and_review_are_ready():
+    app, _ = _app()
+    client = app.test_client()
+    item = _create(
+        client,
+        sds_verified=False,
+        location=None,
+        storage_group="unassessed",
+    )
+
+    issued = client.post(
+        f"/api/inventory/items/{item['id']}/movements",
+        json={
+            "action": "issued",
+            "quantity": 1,
+            "client_event_id": "blocked-incomplete",
+        },
+    )
+
+    assert issued.status_code == 409
+    assert "合规资料不完整" in issued.get_json()["error"]
+
+
+def test_changed_sds_or_catalog_evidence_invalidates_old_review():
+    app, _ = _app()
+    client = app.test_client()
+    listed = _create(client)
+
+    changed_sds = client.patch(
+        f"/api/inventory/items/{listed['id']}",
+        json={
+            "sds_url": "https://example.test/sds/ethanol-revised",
+            "sds_revision": "2026-07-25",
+            "sds_verified": False,
+        },
+    )
+    listed_issue = client.post(
+        f"/api/inventory/items/{listed['id']}/movements",
+        json={
+            "action": "issued",
+            "quantity": 1,
+            "client_event_id": "changed-sds-issue",
+        },
+    )
+
+    not_listed = _create(
+        client,
+        name="目录外测试化学品",
+        hazardous_status="not_listed",
+        controlled_categories=[],
+        is_controlled=False,
+        cas_no="7732-18-5",
+        client_event_id="create-not-listed-reviewed",
+    )
+    changed_cas = client.patch(
+        f"/api/inventory/items/{not_listed['id']}",
+        json={
+            "cas_no": "7440-44-0",
+            "regulatory_review_confirmed": False,
+        },
+    )
+    not_listed_issue = client.post(
+        f"/api/inventory/items/{not_listed['id']}/movements",
+        json={
+            "action": "issued",
+            "quantity": 1,
+            "client_event_id": "changed-cas-issue",
+        },
+    )
+
+    assert changed_sds.status_code == 200
+    assert changed_sds.get_json()["sds_verified_at_ms"] is None
+    assert listed_issue.status_code == 409
+    assert "SDS" in listed_issue.get_json()["error"]
+    assert changed_cas.status_code == 200
+    assert changed_cas.get_json()["regulatory_reviewed_at_ms"] is None
+    assert not_listed_issue.status_code == 409
+    assert "法规复核" in not_listed_issue.get_json()["error"]
+
+
+def test_storage_location_rejects_incompatible_or_unapproved_groups():
+    app, _ = _app()
+    client = app.test_client()
+
+    incompatible = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CAB-MIXED-01",
+            "display_name": "错误混存柜",
+            "location_type": "chemical_cabinet",
+            "allowed_storage_groups": ["flammable", "oxidizer"],
+            "physical_controls": ["通风"],
+        },
+    )
+    acid_only = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CAB-ACID-01",
+            "display_name": "酸柜",
+            "location_type": "acid_alkali_cabinet",
+            "allowed_storage_groups": ["acid"],
+            "physical_controls": ["通风", "防泄漏托盘"],
+        },
+    )
+    wrong_item = client.post(
+        "/api/inventory/items",
+        json={
+            **_create_payload(),
+            "client_event_id": "wrong-location-group",
+            "location": "CAB-ACID-01",
+            "storage_group": "flammable",
+        },
+    )
+
+    assert incompatible.status_code == 400
+    assert "禁忌储存组" in incompatible.get_json()["error"]
+    assert acid_only.status_code == 201
+    assert wrong_item.status_code == 400
+    assert "未允许存放" in wrong_item.get_json()["error"]
+
+
+def test_storage_location_edit_cannot_invalidate_items_already_inside():
+    app, _ = _app()
+    client = app.test_client()
+    item = _create(client)
+    location = next(
+        row
+        for row in client.get("/api/storage-locations").get_json()
+        if row["location_code"] == "CAB-FLAM-01"
+    )
+    invalid_edit = client.patch(
+        f"/api/storage-locations/{location['id']}",
+        json={
+            "display_name": "被错误修改的柜",
+            "location_type": "acid_alkali_cabinet",
+            "allowed_storage_groups": ["acid"],
+            "physical_controls": ["通风", "防泄漏托盘"],
+        },
+    )
+    valid_edit = client.patch(
+        f"/api/storage-locations/{location['id']}",
+        json={
+            "display_name": "易燃液体柜（已复核）",
+            "location_type": "flammable_cabinet",
+            "allowed_storage_groups": ["flammable"],
+            "physical_controls": ["通风", "防泄漏托盘", "防火"],
+            "compliance_note": "现场复核完成",
+        },
+    )
+
+    assert item["storage_group"] == "flammable"
+    assert invalid_edit.status_code == 409
+    assert "仍有" in invalid_edit.get_json()["error"]
+    assert valid_edit.status_code == 200
+    assert valid_edit.get_json()["display_name"] == "易燃液体柜（已复核）"
+
+
+def test_dual_control_requires_a_different_authorized_account():
+    repo = Repository(":memory:")
+    app = create_app(EmptyEngine(), repo, secret_key="test-secret")
+    app.config.update(TESTING=True)
+    users = []
+    for username, display_name, role in (
+        ("requester01", "领用人甲", "supervisor"),
+        ("reviewer01", "复核人乙", "supervisor"),
+    ):
+        user = repo.accounts.create_user(
+            username=username,
+            display_name=display_name,
+            password_hash=generate_password_hash("Temporary123"),
+            role=role,
+            created_by=1,
+        )
+        repo.accounts.update_password(
+            user_id=user["id"],
+            password_hash=generate_password_hash("Changed123"),
+            actor_user_id=user["id"],
+            must_change_password=False,
+            action="password_changed",
+        )
+        users.append(repo.accounts.get_user_by_id(user["id"]))
+    location = repo.inventory.create_storage_location(
+        {
+            "location_code": "CAB-TOXIC-01",
+            "display_name": "剧毒品双锁柜",
+            "storage_condition": None,
+            "created_at_ms": 1000,
+            "created_by": "系统管理员",
+            "location_type": "controlled_cabinet",
+            "allowed_storage_groups": ["toxic"],
+            "requires_dual_control": True,
+            "physical_controls": ["双人双锁", "视频监控"],
+            "compliance_note": "测试库位",
+        }
+    )
+    item = repo.inventory.create_item(
+        {
+            "container_code": "PC-DUAL-01",
+            "material_name": "受双人控制试剂",
+            "category": "chemical",
+            "quantity_remaining": 5,
+            "unit": "g",
+            "status": "available",
+            "location": location["location_code"],
+            "storage_location_id": location["id"],
+            "storage_group": "toxic",
+            "hazards": ["有毒"],
+            "ghs_pictograms": ["GHS06"],
+            "hazardous_status": "listed",
+            "controlled_categories": ["剧毒"],
+            "sds_url": "https://example.test/sds/toxic",
+            "sds_verified_at_ms": 1000,
+            "sds_verified_by": "系统管理员",
+            "source_organization": "合作大学",
+            "handover_document_no": "HD-DUAL-001",
+            "dual_control_required": True,
+            "created_at_ms": 1000,
+            "created_by": "系统管理员",
+            "created_by_user_id": 1,
+            "client_event_id": "dual-register",
+        }
+    )
+    requester = app.test_client()
+    reviewer = app.test_client()
+    with requester.session_transaction() as session:
+        session["user_id"] = users[0]["id"]
+        session["csrf_token"] = "requester-csrf"
+    with reviewer.session_transaction() as session:
+        session["user_id"] = users[1]["id"]
+        session["csrf_token"] = "reviewer-csrf"
+
+    requested = requester.post(
+        f"/api/inventory/items/{item['id']}/movement-approvals",
+        json={
+            "action": "issued",
+            "quantity": 2,
+            "client_event_id": "dual-issue-1",
+        },
+        headers={"X-CSRF-Token": "requester-csrf"},
+    )
+    approval_id = requested.get_json()["approval"]["id"]
+    same_person = requester.post(
+        f"/api/inventory/movement-approvals/{approval_id}/decision",
+        json={"decision": "approve"},
+        headers={"X-CSRF-Token": "requester-csrf"},
+    )
+    forged = requester.post(
+        f"/api/inventory/items/{item['id']}/movements",
+        json={
+            "action": "issued",
+            "quantity": 1,
+            "client_event_id": "forged-dual-issue",
+            "approved_by": "伪造复核人",
+            "approved_by_user_id": users[1]["id"],
+            "approved_at_ms": 2000,
+        },
+        headers={"X-CSRF-Token": "requester-csrf"},
+    )
+    approved = reviewer.post(
+        f"/api/inventory/movement-approvals/{approval_id}/decision",
+        json={"decision": "approve", "note": "账物核对无误"},
+        headers={"X-CSRF-Token": "reviewer-csrf"},
+    )
+
+    assert requested.status_code == 202
+    assert same_person.status_code == 409
+    assert "两个不同账号" in same_person.get_json()["error"]
+    assert forged.status_code == 409
+    assert "先提交待审批操作" in forged.get_json()["error"]
+    assert approved.status_code == 200
+    assert approved.get_json()["item"]["quantity_remaining"] == 3
+    assert approved.get_json()["movement"]["actor"] == "领用人甲"
+    assert approved.get_json()["movement"]["approved_by"] == "复核人乙"

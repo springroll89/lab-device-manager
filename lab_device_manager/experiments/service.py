@@ -313,7 +313,28 @@ class R201Service:
             "cas_no": data.get("cas_no"),
             "spec": data.get("spec"),
             "hazards": data.get("hazards") or [],
+            "ghs_pictograms": data.get("ghs_pictograms") or [],
+            "hazardous_status": data.get(
+                "hazardous_status", "not_assessed"
+            ),
+            "controlled_categories": data.get(
+                "controlled_categories"
+            )
+            or [],
+            "storage_group": data.get("storage_group", "unassessed"),
             "sds_url": data.get("sds_url"),
+            "sds_revision": data.get("sds_revision"),
+            "sds_verified": bool(data.get("sds_verified")),
+            "catalog_source": data.get("catalog_source"),
+            "catalog_version": data.get("catalog_version"),
+            "catalog_entry_no": data.get("catalog_entry_no"),
+            "regulatory_review_confirmed": bool(
+                data.get("regulatory_review_confirmed")
+            ),
+            "dual_control_required": bool(
+                data.get("dual_control_required")
+            ),
+            "dual_control_reason": data.get("dual_control_reason"),
             "is_controlled": bool(data.get("is_controlled")),
             "created_by": data["created_by"],
             "created_by_user_id": data.get("created_by_user_id"),

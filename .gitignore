@@ -13,6 +13,8 @@ config.local.toml
 
 # 运行时数据：会话日志（CSV）单独备份，不纳入代码仓库
 data/
+!lab_device_manager/inventory/data/
+!lab_device_manager/inventory/data/hazardous_catalog_2015_2022.json
 
 # IDE
 .vscode/
