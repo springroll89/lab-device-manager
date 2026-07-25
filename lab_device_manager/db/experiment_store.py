@@ -189,17 +189,105 @@ class ExperimentStore:
     def get_experiment(self, experiment_id: int) -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM experiment WHERE id=?", (experiment_id,)
+                """SELECT experiment.*,
+                     account.username AS created_by_username,
+                     account.display_name AS created_by_display_name
+                   FROM experiment
+                   LEFT JOIN user_account account
+                     ON account.id=experiment.operator_user_id
+                   WHERE experiment.id=?""",
+                (experiment_id,),
             ).fetchone()
         return self._experiment(row)
 
     def list_experiments(self, limit: int = 100) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM experiment ORDER BY created_at_ms DESC, id DESC LIMIT ?",
+                """SELECT experiment.*,
+                     account.username AS created_by_username,
+                     account.display_name AS created_by_display_name
+                   FROM experiment
+                   LEFT JOIN user_account account
+                     ON account.id=experiment.operator_user_id
+                   ORDER BY experiment.created_at_ms DESC,
+                            experiment.id DESC
+                   LIMIT ?""",
                 (limit,),
             ).fetchall()
         return [self._experiment(row) for row in rows]
+
+    def delete_experiment(self, experiment_id: int) -> dict:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM experiment WHERE id=?", (experiment_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError("experiment not found")
+            ledger_count = conn.execute(
+                """SELECT
+                     (SELECT COUNT(*) FROM inventory_movement
+                       WHERE experiment_id=?)
+                     +
+                     (SELECT COUNT(*) FROM material_container_event
+                       WHERE experiment_id=?)""",
+                (experiment_id, experiment_id),
+            ).fetchone()[0]
+            if ledger_count:
+                raise RuntimeError(
+                    "该实验已经产生库存流水，不能直接删除；"
+                    "请先核对并处理库存记录"
+                )
+
+            conn.execute(
+                """DELETE FROM label_print_job
+                   WHERE experiment_id=?
+                      OR trace_item_id IN (
+                        SELECT id FROM trace_item
+                        WHERE experiment_id=?
+                      )""",
+                (experiment_id, experiment_id),
+            )
+            conn.execute(
+                """DELETE FROM trace_item_relation
+                   WHERE parent_item_id IN (
+                           SELECT id FROM trace_item
+                           WHERE experiment_id=?
+                         )
+                      OR child_item_id IN (
+                           SELECT id FROM trace_item
+                           WHERE experiment_id=?
+                         )""",
+                (experiment_id, experiment_id),
+            )
+            conn.execute(
+                "DELETE FROM trace_event WHERE experiment_id=?",
+                (experiment_id,),
+            )
+            conn.execute(
+                "DELETE FROM trace_item WHERE experiment_id=?",
+                (experiment_id,),
+            )
+            for table in (
+                "deviation",
+                "measurement",
+                "material_usage",
+                "experiment_data_source_binding",
+                "experiment_event",
+                "recipe_parameter",
+                "device_reservation",
+            ):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE experiment_id=?",
+                    (experiment_id,),
+                )
+            conn.execute(
+                "DELETE FROM step_instance WHERE experiment_id=?",
+                (experiment_id,),
+            )
+            conn.execute(
+                "DELETE FROM experiment WHERE id=?", (experiment_id,)
+            )
+        return self._experiment(row)
 
     def experiment_revision(self, experiment_id: int) -> dict:
         with self._lock:

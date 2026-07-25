@@ -15,6 +15,10 @@ STATUS_LABELS = {
     "consumed": "已消耗",
     "completed": "已完成",
     "disposed": "已报废",
+    "available": "可用",
+    "empty": "已用完",
+    "quarantined": "隔离待检查",
+    "expired": "已过期",
 }
 
 TYPE_LABELS = {
@@ -70,6 +74,7 @@ def material_container_qr_payload(container: dict) -> str:
             f"供应商批号：{container.get('supplier_lot') or '—'}",
             f"有效期：{container.get('expires_on') or '—'}",
             f"登记余量：{quantity}",
+            f"实验人：{container.get('created_by') or '—'}",
         ]
     )
 
@@ -204,10 +209,8 @@ def trace_labels_html(
     )
 
 
-def storage_location_label_html(
-    location: dict, copies: int = 1
-) -> str:
-    label = f"""
+def _storage_location_label(location: dict) -> str:
+    return f"""
     <article class="label">
       <div>
         <div class="brand">PURICORE</div>
@@ -224,22 +227,35 @@ def storage_location_label_html(
         <small>{escape(location['location_code'])}</small>
       </div>
     </article>"""
+
+
+def storage_location_labels_html(
+    locations: list[dict], copies: int = 1
+) -> str:
+    labels = "".join(
+        _storage_location_label(location) * copies
+        for location in locations
+    )
+    return _page_shell("PURICORE · 存储位置标签", labels)
+
+
+def storage_location_label_html(
+    location: dict, copies: int = 1
+) -> str:
     return _page_shell(
         f"{location['display_name']} · 位置标签",
-        label * copies,
+        _storage_location_label(location) * copies,
     )
 
 
-def material_container_label_html(
-    container: dict, copies: int = 1
-) -> str:
+def _material_container_label(container: dict) -> str:
     quantity = "未录入"
     if container.get("quantity_remaining") is not None:
         quantity = (
             f"{container['quantity_remaining']} "
             f"{container.get('unit') or ''}"
         ).strip()
-    label = f"""
+    return f"""
     <article class="label">
       <div>
         <div class="brand">PURICORE</div>
@@ -251,6 +267,7 @@ def material_container_label_html(
           <div><b>有效期</b> {escape(container.get('expires_on') or '—')}</div>
           <div><b>登记余量</b> {escape(quantity)}</div>
           <div><b>状态</b> {escape(STATUS_LABELS.get(container['status'], container['status']))}</div>
+          <div><b>实验人</b> {escape(container.get('created_by') or '—')}</div>
         </div>
       </div>
       <div class="qr">
@@ -258,7 +275,22 @@ def material_container_label_html(
         <small>{escape(container['container_code'])}</small>
       </div>
     </article>"""
+
+
+def material_container_labels_html(
+    containers: list[dict], copies: int = 1
+) -> str:
+    labels = "".join(
+        _material_container_label(container) * copies
+        for container in containers
+    )
+    return _page_shell("PURICORE · 原材料标签", labels)
+
+
+def material_container_label_html(
+    container: dict, copies: int = 1
+) -> str:
     return _page_shell(
         f"{container['container_code']} · 原材料标签",
-        label * copies,
+        _material_container_label(container) * copies,
     )

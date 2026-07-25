@@ -186,8 +186,10 @@ let flushingOutbox = false;
 let liveConnecting = false;
 let viewedStepCode = null;
 let currentUserId = null;
+let currentSession = null;
 let revisionToken = null;
 let detailLoading = false;
+const liveDeviceSeries = new Map();
 const openDevicePickers = new Set();
 const pendingDeviceSelections = new Map();
 const stepFormUiState = new Map();
@@ -664,9 +666,11 @@ async function loadList() {
       return;
     }
     for (const item of experiments) {
-      const card = document.createElement("a");
+      const card = document.createElement("div");
       card.className = "experiment-card";
-      card.href = `/experiments/${item.id}`;
+      const open = document.createElement("a");
+      open.className = "experiment-card-open";
+      open.href = `/experiments/${item.id}`;
       const text = document.createElement("div");
       const batch = document.createElement("div");
       batch.className = "batch";
@@ -681,14 +685,59 @@ async function loadList() {
       }/${item.recipe_version} · 当前 ${
         item.current_step_code
       }${devices.length ? ` · ${devices.join("、")}` : " · 尚未绑定设备"}`;
-      text.append(batch, meta);
+      const creator = document.createElement("div");
+      creator.className = "experiment-creator";
+      creator.textContent = item.created_by_username
+        ? `创建账号：${item.created_by_username}`
+        : `创建账号：历史记录（${item.operator || "未知操作员"}）`;
+      text.append(batch, meta, creator);
+      open.appendChild(text);
+      const actions = document.createElement("div");
+      actions.className = "experiment-card-actions";
       const status = document.createElement("span");
       status.className = `status ${item.status}`;
       status.textContent = STATUS_LABELS[item.status] || item.status;
-      card.append(text, status);
+      actions.appendChild(status);
+      if (currentSession?.can_delete_experiments) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger experiment-delete";
+        remove.textContent = "删除";
+        remove.setAttribute("aria-label", `删除实验 ${item.batch_id}`);
+        remove.addEventListener("click", () => deleteExperiment(item, remove));
+        actions.appendChild(remove);
+      }
+      card.append(open, actions);
       list.appendChild(card);
     }
   } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function deleteExperiment(item, button) {
+  const confirmation = prompt(
+    `删除后无法恢复。请输入批次号 ${item.batch_id} 确认删除：`
+  );
+  if (confirmation === null) return;
+  if (confirmation.trim().toUpperCase() !== item.batch_id.toUpperCase()) {
+    toast("批次号不一致，已取消删除。", true);
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "删除中…";
+  try {
+    const deleted = await api(`/api/experiments/${item.id}`, {
+      method:"DELETE",
+      headers:{
+        "X-CSRF-Token":currentSession.csrf_token
+      }
+    });
+    toast(`已删除实验 ${deleted.batch_id}`);
+    await Promise.all([loadList(), refreshNextBatchId()]);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "删除";
     toast(error.message, true);
   }
 }
@@ -705,6 +754,7 @@ function localDateCode() {
 async function loadSession() {
   try {
     const data = await api("/api/session");
+    currentSession = data;
     currentOperator = data.operator || "本机操作员";
     currentUserId = data.user_id;
     if (byId("operatorDisplay")) {
@@ -712,6 +762,7 @@ async function loadSession() {
     }
     return data;
   } catch (error) {
+    currentSession = null;
     currentOperator = "本机操作员";
     if (byId("operatorDisplay")) {
       byId("operatorDisplay").textContent = "读取失败";
@@ -872,6 +923,7 @@ async function handleScannedCode(code) {
 function renderDetail() {
   const exp = state.experiment;
   byId("detailBatch").textContent = exp.batch_id;
+  byId("executionHeaderBatch").textContent = exp.batch_id;
   byId("reportLink").href = `/api/experiments/${exp.id}/report.pdf`;
   const hero = byId("heroMeta");
   hero.textContent = "";
@@ -882,10 +934,12 @@ function renderDetail() {
     badge(STATUS_LABELS[exp.status] || exp.status),
     badge(STATUS_LABELS[exp.validation_mode] || exp.validation_mode)
   );
+  rememberDeviceSnapshots(state.available_devices || []);
   renderProgress();
   renderCurrentStep();
   renderDevices(state.available_devices || []);
   renderTimeline();
+  renderExecutionAlerts();
   renderMeasurements();
   renderDeviations();
   renderTraceability();
@@ -1266,7 +1320,12 @@ async function submitTraceLocation(event) {
 function renderProgress() {
   const current = state.experiment.current_step_code;
   const index = Math.max(0, MAIN_STEPS.indexOf(current));
-  byId("progressValue").style.width = `${Math.round((index / (MAIN_STEPS.length - 1)) * 100)}%`;
+  const progress = Math.round((index / (MAIN_STEPS.length - 1)) * 100);
+  byId("progressValue").style.width = `${progress}%`;
+  byId("executionHeaderProgressValue").style.width = `${progress}%`;
+  byId("executionHeaderStep").textContent = (
+    `第 ${index + 1} 步 / 共 ${MAIN_STEPS.length} 步`
+  );
   const completed = new Set(state.steps.filter(s => s.status === "completed").map(s => s.step_code));
   const strip = byId("stepStrip");
   strip.textContent = "";
@@ -1314,11 +1373,16 @@ function renderCurrentStep() {
     captureStepFormUiState(previousForm);
   }
   if (viewedStepCode && viewedStepCode !== step) {
+    box.classList.remove("has-step-device");
     renderHistoricalStep(box, viewedStepCode);
     return;
   }
   viewedStepCode = null;
   box.classList.remove("history-view");
+  box.classList.toggle(
+    "has-step-device",
+    (STEP_DEVICE_TYPES[step] || []).length > 0
+  );
   box.textContent = "";
   const code = document.createElement("div");
   code.className = "step-code";
@@ -1350,7 +1414,7 @@ function renderCurrentStep() {
       box.appendChild(warning);
     }
     const button = document.createElement("button");
-    button.className = "primary";
+    button.className = "primary step-primary-action is-complete";
     button.textContent = exp.reviewer ? "提交复核" : "完成实验并锁定记录";
     button.disabled = openDeviations.length > 0;
     button.onclick = submitExperiment;
@@ -1368,7 +1432,7 @@ function renderCurrentStep() {
   }
   if (!active) {
     const button = document.createElement("button");
-    button.className = "primary";
+    button.className = "primary step-primary-action is-start";
     button.textContent = STEP_ACTIONS[step]?.start || "开始并打标";
     button.disabled = missingDeviceTypes.length > 0;
     if (missingDeviceTypes.length) {
@@ -1654,6 +1718,7 @@ function renderStepDeviceSurface(parent, step) {
   if (!types.length) return [];
   const surface = document.createElement("div");
   surface.className = "step-device-surface";
+  surface.dataset.stepCode = step;
   const header = document.createElement("div");
   header.className = "capture-header";
   const title = document.createElement("strong");
@@ -1676,6 +1741,7 @@ function renderStepDeviceSurface(parent, step) {
     }
     const row = document.createElement("div");
     row.className = "step-device-row";
+    row.dataset.deviceType = type;
     const identity = document.createElement("div");
     identity.className = "step-device-identity";
     const online = deviceReadingIsFresh(device);
@@ -1704,9 +1770,20 @@ function renderStepDeviceSurface(parent, step) {
     if (relevant.length) {
       relevant.forEach(([label,value,unit]) => {
         const metric = document.createElement("div");
-        metric.innerHTML = `<span></span><b></b>`;
-        metric.querySelector("span").textContent = label;
-        metric.querySelector("b").textContent = formatDeviceValue(value, unit);
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        const reading = document.createElement("b");
+        const numeric = Number(value);
+        reading.textContent = Number.isFinite(numeric)
+          ? numeric.toFixed(2)
+          : String(value ?? "—");
+        if (unit) {
+          const unitNode = document.createElement("small");
+          unitNode.className = "metric-unit";
+          unitNode.textContent = unit;
+          reading.appendChild(unitNode);
+        }
+        metric.append(caption, reading);
         metrics.appendChild(metric);
       });
     } else {
@@ -1716,6 +1793,7 @@ function renderStepDeviceSurface(parent, step) {
     }
     row.append(identity, metrics);
     surface.appendChild(row);
+    renderLiveDeviceTrend(surface, device);
   }
   if (["R201-40","R201-50"].includes(step) && (state.temperature_series || []).length) {
     const chart = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1794,7 +1872,7 @@ function appendCompleteButton(form, text, disabled = false) {
   actions.className = "field full action-row";
   const complete = document.createElement("button");
   complete.type = "submit";
-  complete.className = "primary";
+  complete.className = "primary step-primary-action is-complete";
   complete.textContent = text;
   complete.disabled = disabled;
   actions.appendChild(complete);
@@ -2304,8 +2382,96 @@ function deviceMetrics(device) {
 function formatDeviceValue(value, unit) {
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
-  if (!Number.isFinite(number)) return "—";
+  if (!Number.isFinite(number)) return String(value);
   return `${number.toFixed(2)}${unit ? ` ${unit}` : ""}`;
+}
+
+function liveDeviceReading(device) {
+  const latest = device?.latest;
+  const metrics = latest?.metrics || {};
+  if (!latest) return null;
+  if (device.type === "tyd02") {
+    return {
+      label:"累计加入量",
+      value:Number(latest.acc_volume),
+      unit:latest.acc_unit || "mL"
+    };
+  }
+  if (device.type === "stirrer") {
+    return {label:"实际转速",value:Number(metrics.speed),unit:"rpm"};
+  }
+  if (device.type === "viscometer") {
+    return {
+      label:"粘度",
+      value:Number(metrics.viscosity_mPas),
+      unit:"mPa·s"
+    };
+  }
+  if (device.type === "whd46") {
+    return {label:"平均温度",value:Number(latest.temp_c),unit:"℃"};
+  }
+  return null;
+}
+
+function rememberDeviceSnapshots(devices) {
+  for (const device of devices || []) {
+    const reading = liveDeviceReading(device);
+    const timestamp = Number(device.latest?.ts_ms);
+    if (
+      !reading
+      || !Number.isFinite(reading.value)
+      || !Number.isFinite(timestamp)
+    ) {
+      continue;
+    }
+    const key = String(device.id ?? device.name);
+    const existing = liveDeviceSeries.get(key) || [];
+    if (existing[existing.length - 1]?.x === timestamp) continue;
+    existing.push({x:timestamp,y:reading.value,valid:true});
+    liveDeviceSeries.set(key, existing.slice(-120));
+  }
+}
+
+function renderLiveDeviceTrend(parent, device) {
+  if (!device) return;
+  const reading = liveDeviceReading(device);
+  if (!reading) return;
+  const points = liveDeviceSeries.get(
+    String(device.id ?? device.name)
+  ) || [];
+  const trend = document.createElement("div");
+  trend.className = "step-device-trend";
+  const heading = document.createElement("div");
+  heading.className = "step-device-trend-heading";
+  const label = document.createElement("span");
+  label.textContent = `${reading.label}实时趋势`;
+  const range = document.createElement("small");
+  range.textContent = points.length > 1
+    ? `最近 ${points.length} 个采集点`
+    : "等待连续数据…";
+  heading.append(label, range);
+  trend.appendChild(heading);
+  if (points.length > 1) {
+    const chart = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "svg"
+    );
+    chart.setAttribute("class", "trend device-mini-trend");
+    chart.setAttribute("viewBox", "0 0 600 150");
+    chart.setAttribute("role", "img");
+    chart.setAttribute(
+      "aria-label",
+      `${device.alias || device.name}${reading.label}实时趋势`
+    );
+    trend.appendChild(chart);
+    drawTrend(chart, points, reading.unit, []);
+  } else {
+    const waiting = document.createElement("div");
+    waiting.className = "step-device-trend-waiting";
+    waiting.innerHTML = "<i></i><i></i><i></i><i></i><i></i>";
+    trend.appendChild(waiting);
+  }
+  parent.appendChild(trend);
 }
 
 function renderDevices(devices) {
@@ -2424,9 +2590,11 @@ function renderTimeline() {
     .sort((a,b) => b.effective_at_ms - a.effective_at_ms)
     .slice(0,40);
   if (!events.length) { box.textContent = "暂无事件"; return; }
-  for (const item of events) {
+  events.forEach((item, eventIndex) => {
     const row = document.createElement("div");
     row.className = "timeline-item";
+    row.dataset.eventType = item.event_type;
+    if (eventIndex === 0) row.classList.add("is-latest");
     const time = document.createElement("div");
     time.className = "timeline-time";
     time.textContent = new Date(item.effective_at_ms).toLocaleTimeString("zh-CN",{hour12:false});
@@ -2461,7 +2629,66 @@ function renderTimeline() {
     content.appendChild(meta);
     row.append(time,marker,content);
     box.appendChild(row);
+  });
+}
+
+function renderExecutionAlerts() {
+  const box = byId("executionAlerts");
+  if (!box) return;
+  box.textContent = "";
+  const openDeviations = (state.deviations || []).filter(
+    item => item.status !== "closed"
+  );
+  const integrityNeedsAttention = (
+    ["R201-40","R201-50"].includes(state.experiment.current_step_code)
+    && ["gaps_detected","no_data","no_source"].includes(
+      state.telemetry_integrity_status
+    )
+  );
+  if (!openDeviations.length && !integrityNeedsAttention) {
+    box.classList.add("hidden");
+    return;
   }
+  box.classList.remove("hidden");
+  const alert = document.createElement("div");
+  alert.className = "execution-alert";
+  const icon = document.createElement("span");
+  icon.className = "execution-alert-icon";
+  icon.textContent = "!";
+  const copy = document.createElement("div");
+  copy.className = "execution-alert-copy";
+  const title = document.createElement("strong");
+  const description = document.createElement("p");
+  if (openDeviations.length) {
+    title.textContent = `${openDeviations.length} 条异常等待处置`;
+    description.textContent = openDeviations
+      .slice(0, 2)
+      .map(item => item.description)
+      .join("；");
+  } else {
+    title.textContent = "设备数据采集不完整";
+    description.textContent = state.telemetry_integrity_status === "gaps_detected"
+      ? `检测到 ${state.telemetry_gaps?.length || 0} 个数据中断区间`
+      : "当前步骤尚未收到连续的设备数据";
+  }
+  copy.append(title, description);
+  const actions = document.createElement("div");
+  actions.className = "execution-alert-actions";
+  const inspect = document.createElement("button");
+  inspect.type = "button";
+  inspect.className = "secondary";
+  inspect.textContent = openDeviations.length ? "查看处置" : "检查设备";
+  inspect.onclick = () => (
+    openDeviations.length ? byId("deviationPanel") : byId("devicePanel")
+  )?.scrollIntoView({behavior:"smooth",block:"start"});
+  const record = document.createElement("button");
+  record.type = "button";
+  record.className = "warning-action";
+  record.textContent = "确认并记录异常";
+  record.onclick = openDeviation;
+  actions.append(inspect, record);
+  alert.append(icon, copy, actions);
+  box.appendChild(alert);
 }
 
 function automaticEventSummary(item) {
@@ -2660,6 +2887,7 @@ async function connectLive() {
     byId("liveState").textContent = `实时 · ${new Date().toLocaleTimeString("zh-CN",{hour12:false})}`;
     if (data.available_devices) {
       state.available_devices = data.available_devices;
+      rememberDeviceSnapshots(data.available_devices);
       renderDevices(data.available_devices);
     }
     if (
@@ -2687,6 +2915,7 @@ async function connectLive() {
       state.telemetry_integrity_status = data.telemetry_integrity_status;
     }
     renderCurrentStep();
+    renderExecutionAlerts();
   });
   source.onerror = () => {
     byId("liveState").textContent = "实时连接重试中";
@@ -2694,15 +2923,30 @@ async function connectLive() {
 }
 
 async function init() {
+  document.body.classList.toggle(
+    "experiment-detail-mode",
+    Boolean(experimentId)
+  );
+  byId("executionHeaderSummary")?.classList.toggle(
+    "hidden",
+    !experimentId
+  );
+  byId("executionScanButton")?.classList.toggle("hidden", !experimentId);
+  byId("executionExit")?.classList.toggle("hidden", !experimentId);
   await syncClock();
   const sessionState = await loadSession();
   if (sessionState === false) return;
   updateOutboxStatus();
-  byId("cameraScanButton")?.addEventListener("click", () => {
-    PuricoreScanner.open({onResult:handleScannedCode}).catch(error =>
-      toast(error.message, true)
-    );
-  });
+  for (const scannerButton of [
+    byId("cameraScanButton"),
+    byId("executionScanButton")
+  ]) {
+    scannerButton?.addEventListener("click", () => {
+      PuricoreScanner.open({onResult:handleScannedCode}).catch(error =>
+        toast(error.message, true)
+      );
+    });
+  }
   byId("cameraScanClose")?.addEventListener("click", async () => {
     await PuricoreScanner.stop();
     byId("cameraScanDialog").close();

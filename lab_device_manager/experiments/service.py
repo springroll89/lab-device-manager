@@ -246,6 +246,14 @@ class R201Service:
     def list_experiments(self) -> list[dict]:
         return self.store.list_experiments()
 
+    def delete_experiment(self, experiment_id: int) -> dict:
+        try:
+            return self.store.delete_experiment(experiment_id)
+        except LookupError as exc:
+            raise R201Error(str(exc), 404) from exc
+        except RuntimeError as exc:
+            raise R201Error(str(exc), 409) from exc
+
     def experiment_revision(self, experiment_id: int) -> dict:
         try:
             return self.store.experiment_revision(experiment_id)

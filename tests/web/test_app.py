@@ -403,6 +403,19 @@ def test_shared_premium_theme_is_served_by_every_operator_page(tmp_path):
         assert b"/static/puricore-theme.css" in response.data
 
 
+def test_dashboard_uses_the_same_outer_card_style_for_every_device(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    page = client.get("/static/index.html")
+    script = client.get("/static/app.js")
+    theme = client.get("/static/puricore-theme.css")
+
+    assert b".card.sensor-card" not in page.data
+    assert b"sensor-card" not in script.data
+    assert b".page-dashboard .card.sensor-card" not in theme.data
+
+
 def test_account_creation_keeps_stable_form_reference(tmp_path):
     app, repo, did = _app(tmp_path)
     script = app.test_client().get("/static/accounts.js")
@@ -498,6 +511,21 @@ def _change_password(client, current_password, new_password):
     )
 
 
+def _experiment_request(batch_id="20260725-CEM-01"):
+    return {
+        "batch_id": batch_id,
+        "membrane_system": "CEM",
+        "recipe_no": "R-CEM-001",
+        "recipe_version": "V1",
+        "sop_code": "SOP-SOL-GEL-CEM-AEM-01",
+        "sop_version": "V0.2",
+        "target_viscosity_min_mpas": 2.5,
+        "target_viscosity_max_mpas": 10,
+        "reviewer": "",
+        "spec_snapshot": {},
+    }
+
+
 def test_login_is_always_required_for_pages_and_apis(tmp_path):
     app, repo, did = _authenticated_app(tmp_path)
     client = app.test_client()
@@ -581,6 +609,87 @@ def test_admin_changes_password_and_can_enter_system(tmp_path):
     assert session_data["operator"] == "系统管理员"
     assert session_data["role"] == "super_admin"
     assert session_data["can_manage_accounts"] is True
+
+
+def test_super_admin_deletes_experiment_and_workbench_shows_creator_account(
+    tmp_path,
+):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    session_data = admin.get("/api/session").get_json()
+    created = admin.post(
+        "/api/experiments", json=_experiment_request()
+    ).get_json()
+
+    workbench = admin.get("/api/workbench").get_json()
+    listed = next(
+        item for item in workbench["experiments"]
+        if item["id"] == created["id"]
+    )
+    missing_csrf = admin.delete(
+        f"/api/experiments/{created['id']}"
+    )
+    deleted = admin.delete(
+        f"/api/experiments/{created['id']}",
+        headers={"X-CSRF-Token": session_data["csrf_token"]},
+    )
+
+    assert session_data["can_delete_experiments"] is True
+    assert listed["created_by_username"] == "admin"
+    assert listed["created_by_display_name"] == "系统管理员"
+    assert missing_csrf.status_code == 403
+    assert missing_csrf.get_json()["error"] == "invalid_csrf_token"
+    assert deleted.status_code == 200
+    assert deleted.get_json()["batch_id"] == created["batch_id"]
+    assert repo.experiments.get_experiment(created["id"]) is None
+
+
+def test_supervisor_and_operator_cannot_delete_experiments(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    admin = app.test_client()
+    _login(admin)
+    _change_password(admin, "admin", "Admin1234")
+    admin_session = admin.get("/api/session").get_json()
+    created = admin.post(
+        "/api/experiments", json=_experiment_request()
+    ).get_json()
+
+    for username, display_name, role in (
+        ("lab-supervisor", "实验室主管甲", "supervisor"),
+        ("lab-operator", "实验操作员甲", "operator"),
+    ):
+        response = admin.post(
+            "/api/accounts",
+            json={
+                "username": username,
+                "display_name": display_name,
+                "password": "Initial123",
+                "role": role,
+            },
+            headers={
+                "X-CSRF-Token": admin_session["csrf_token"]
+            },
+        )
+        assert response.status_code == 201
+        user = app.test_client()
+        _login(user, username, "Initial123")
+        _change_password(user, "Initial123", "Changed123")
+        user_session = user.get("/api/session").get_json()
+
+        denied = user.delete(
+            f"/api/experiments/{created['id']}",
+            headers={
+                "X-CSRF-Token": user_session["csrf_token"]
+            },
+        )
+
+        assert user_session["can_delete_experiments"] is False
+        assert denied.status_code == 403
+        assert denied.get_json()["error"] == "forbidden"
+
+    assert repo.experiments.get_experiment(created["id"]) is not None
 
 
 def test_login_rejects_invalid_credentials_and_rate_limits(tmp_path):

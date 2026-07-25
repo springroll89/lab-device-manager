@@ -78,6 +78,10 @@
       border-radius:15px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);
       text-decoration:none;color:var(--text);transition:.16s ease}
     .experiment-card:hover{transform:translateY(-2px);border-color:rgba(73,215,177,.35)}
+    .experiment-card-open{min-width:0;color:inherit;text-decoration:none}
+    .experiment-card-actions{display:flex;flex-direction:column;align-items:flex-end;gap:9px}
+    .experiment-creator{font-size:11px;color:var(--muted);margin-top:7px}
+    .experiment-delete{min-height:32px;padding:5px 10px;font-size:11px}
     .batch{font-size:17px;font-weight:700}.meta{font-size:12px;color:var(--muted);margin-top:6px}
     .status{align-self:start;padding:6px 10px;border-radius:999px;font-size:11px;text-transform:uppercase;
       background:rgba(75,168,255,.12);color:#b9ddff;border:1px solid rgba(75,168,255,.23)}
@@ -176,8 +180,19 @@
       <img src="/static/logo.png" alt="Puricore">
       <span><strong>实验执行</strong></span>
     </a>
+    <div id="executionHeaderSummary" class="execution-header-summary hidden" aria-live="polite">
+      <strong id="executionHeaderBatch">—</strong>
+      <div class="execution-header-progress">
+        <span id="executionHeaderStep">第 — 步 / 共 15 步</span>
+        <div class="execution-header-progress-track" aria-hidden="true">
+          <span id="executionHeaderProgressValue"></span>
+        </div>
+      </div>
+    </div>
     <div class="top-actions">
       <nav data-primary-nav></nav>
+      <button id="executionScanButton" class="execution-scan hidden" type="button">扫码</button>
+      <a id="executionExit" class="execution-exit hidden" href="/experiments">退出执行</a>
       <div data-account-menu></div>
     </div>
   </header>
@@ -284,11 +299,15 @@
               </div>
             </div>
           </section>
-          <section id="timelinePanel" class="panel timeline-panel">
+          <section id="timelinePanel" class="panel timeline-panel execution-timeline-panel">
             <div class="panel-head">
-              <div><h2>操作与数据时间轴</h2><p style="margin:4px 0 0">人工标记与设备自动生成的数据在这里汇合。</p></div>
+              <div><h2>操作与数据时间轴</h2><p style="margin:4px 0 0">人工标记与设备自动采集在这里汇合。</p></div>
+              <span class="execution-auto-capture"><i></i>设备自动采集</span>
             </div>
-            <div class="panel-body"><div id="timeline" class="timeline"></div></div>
+            <div class="panel-body">
+              <div id="executionAlerts" class="execution-alerts"></div>
+              <div id="timeline" class="timeline"></div>
+            </div>
           </section>
           <details id="devicePanel" class="panel">
             <summary class="panel-head"><div><h2>实时设备</h2><p style="margin:4px 0 0">系统持续采集；展开可查看各设备专属指标。</p></div><div class="device-summary"><span id="liveState" class="sync">连接中…</span></div></summary>

@@ -143,6 +143,41 @@ def test_experiments_page_and_static_script_are_served():
     assert "选择本批使用的".encode() in script.data
     assert b"capture.role_device_ids" in script.data
     assert b'createStatus' in page.data
+    assert b"deleteExperiment" in script.data
+    assert b"created_by_username" in script.data
+    assert b"can_delete_experiments" in script.data
+
+
+def test_experiment_detail_has_focused_tablet_execution_shell():
+    app, _, _ = _app()
+    client = app.test_client()
+
+    page = client.get("/experiments")
+    script = client.get("/static/experiment.js")
+    theme = client.get("/static/puricore-theme.css")
+
+    assert page.status_code == 200
+    assert script.status_code == 200
+    assert theme.status_code == 200
+    for element_id in (
+        b'executionHeaderSummary',
+        b'executionHeaderBatch',
+        b'executionHeaderStep',
+        b'executionHeaderProgressValue',
+        b'executionExit',
+        b'executionAlerts',
+    ):
+        assert element_id in page.data
+
+    assert b'experiment-detail-mode' in script.data
+    assert b'step-primary-action' in script.data
+    assert b'rememberDeviceSnapshots' in script.data
+    assert b'renderExecutionAlerts' in script.data
+
+    assert b'.page-experiment.experiment-detail-mode' in theme.data
+    assert b'.execution-header-summary' in theme.data
+    assert b'.step-primary-action' in theme.data
+    assert b'.execution-timeline-panel' in theme.data
     assert b'tracePanel' in page.data
     assert b'intermediateTraceButton' in page.data
     assert b'retrieveTraceButton' in page.data
@@ -372,7 +407,9 @@ def test_material_management_page_and_offline_qr_are_available():
     assert qr.headers["X-QR-Code"] == "RM-ETOH-0001"
     assert "PURICORE原材料" in decoded[0].text
     assert "编号：RM-ETOH-0001" in decoded[0].text
+    assert "实验人：" in decoded[0].text
     assert label.status_code == 200
+    assert "实验人".encode() in label.data
     assert "原材料标签".encode() in label.data
     assert detail.status_code == 200
     assert detail.get_json()["events"][0]["event_type"] == "registered"
@@ -383,6 +420,62 @@ def test_material_management_page_and_offline_qr_are_available():
     assert redirect_response.headers["Location"] == (
         f"/inventory?scan={created['container_code']}"
     )
+
+
+def test_material_and_location_labels_can_be_printed_in_batches():
+    app, _, _ = _app()
+    client = app.test_client()
+    first = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-BATCH-0001",
+            "material_name": "批量标签原料一",
+            "quantity_remaining": 100,
+            "unit": "g",
+        },
+    ).get_json()
+    second = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-BATCH-0002",
+            "material_name": "批量标签原料二",
+            "quantity_remaining": 200,
+            "unit": "g",
+        },
+    ).get_json()
+    materials = client.get(
+        "/api/material-containers/labels",
+        query_string={"ids": f"{first['id']},{second['id']}"},
+    )
+    location_one = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CAB-01-U-S01",
+            "display_name": "上柜第1层",
+            "actor": "张三",
+        },
+    ).get_json()
+    location_two = client.post(
+        "/api/storage-locations",
+        json={
+            "location_code": "CAB-01-U-S02",
+            "display_name": "上柜第2层",
+            "actor": "张三",
+        },
+    ).get_json()
+    locations = client.get(
+        "/api/storage-locations/labels",
+        query_string={
+            "ids": f"{location_one['id']},{location_two['id']}"
+        },
+    )
+
+    assert materials.status_code == 200
+    assert b"RM-BATCH-0001" in materials.data
+    assert b"RM-BATCH-0002" in materials.data
+    assert locations.status_code == 200
+    assert b"CAB-01-U-S01" in locations.data
+    assert b"CAB-01-U-S02" in locations.data
 
 
 def test_camera_frame_can_be_decoded_on_server_for_ios_fallback():

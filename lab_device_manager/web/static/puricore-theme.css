@@ -463,15 +463,6 @@ summary:focus-visible {
   transform: translateY(-2px);
 }
 
-.page-dashboard .card.sensor-card {
-  border-left: 1px solid var(--pc-line-soft);
-  box-shadow: inset 2px 0 0 var(--pc-accent);
-}
-
-.page-dashboard .card.sensor-card .name {
-  color: var(--pc-text);
-}
-
 .page-dashboard .card-head {
   display: flex;
   align-items: flex-start;
@@ -1067,6 +1058,31 @@ summary:focus-visible {
   background: var(--pc-surface-2);
   border-color: rgba(124, 227, 191, 0.34);
   transform: translateY(-1px);
+}
+
+.page-experiment .experiment-card-open {
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.page-experiment .experiment-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 9px;
+}
+
+.page-experiment .experiment-creator {
+  margin-top: 7px;
+  color: var(--pc-muted-2);
+  font-size: 10px;
+}
+
+.page-experiment .experiment-delete {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 10px;
 }
 
 .page-experiment .batch {
@@ -3005,6 +3021,812 @@ summary:focus-visible {
 
   .page-login .card {
     padding: 30px 24px;
+  }
+}
+
+/* Focused tablet and mobile execution mode */
+.page-experiment .execution-header-summary {
+  min-width: 0;
+  align-items: center;
+  gap: clamp(24px, 4vw, 72px);
+}
+
+.page-experiment .execution-header-summary > strong {
+  overflow: hidden;
+  color: var(--pc-text);
+  font: 700 18px/1.2 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-experiment .execution-header-progress {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 260px);
+  gap: 16px;
+  align-items: center;
+  color: var(--pc-muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.page-experiment .execution-header-progress-track {
+  height: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+
+.page-experiment .execution-header-progress-track > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #62d9b6, #91ead0);
+  border-radius: inherit;
+  transition: width 240ms ease;
+}
+
+.page-experiment .execution-scan,
+.page-experiment .execution-exit {
+  min-height: 38px;
+  padding: 8px 12px;
+  color: var(--pc-muted);
+  background: transparent;
+  border: 1px solid var(--pc-line);
+  border-radius: 9px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.page-experiment .execution-scan:hover,
+.page-experiment .execution-exit:hover {
+  color: var(--pc-accent);
+  border-color: rgba(124, 227, 191, 0.4);
+  background: var(--pc-accent-soft);
+}
+
+.page-experiment.experiment-detail-mode {
+  background:
+    radial-gradient(circle at 72% -20%, rgba(73, 215, 177, 0.08), transparent 34%),
+    #050a0e;
+}
+
+.page-experiment.experiment-detail-mode .topbar {
+  display: grid;
+  grid-template-columns: auto minmax(420px, 1fr) auto;
+  gap: clamp(24px, 4vw, 70px);
+  min-height: 88px;
+  padding: 12px clamp(22px, 3vw, 42px);
+  background: rgba(4, 10, 14, 0.96);
+}
+
+.page-experiment.experiment-detail-mode .brand {
+  min-width: 230px;
+}
+
+.page-experiment.experiment-detail-mode .execution-header-summary {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(340px, 1.2fr);
+}
+
+.page-experiment.experiment-detail-mode .top-actions {
+  width: auto;
+  justify-self: end;
+}
+
+.page-experiment.experiment-detail-mode .top-actions .primary-nav,
+.page-experiment.experiment-detail-mode .experiment-page-actions {
+  display: none;
+}
+
+.page-experiment.experiment-detail-mode main {
+  width: min(1540px, 100%);
+  padding: clamp(22px, 2.4vw, 38px) clamp(22px, 3vw, 44px) 76px;
+}
+
+.page-experiment.experiment-detail-mode .hero {
+  min-height: 40px;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.page-experiment.experiment-detail-mode .hero > div:first-child,
+.page-experiment.experiment-detail-mode .hero .action-row > .ghost {
+  display: none;
+}
+
+.page-experiment.experiment-detail-mode .hero .action-row {
+  align-items: center;
+  gap: 12px;
+}
+
+.page-experiment.experiment-detail-mode .hero .secondary {
+  min-height: 36px;
+  padding: 7px 11px;
+  color: var(--pc-muted);
+  font-size: 11px;
+}
+
+.page-experiment.experiment-detail-mode .progress-wrap {
+  margin: 0 0 22px;
+}
+
+.page-experiment.experiment-detail-mode .progress-line {
+  display: none;
+}
+
+.page-experiment.experiment-detail-mode .step-strip {
+  justify-content: center;
+  gap: 8px;
+  padding: 0;
+}
+
+.page-experiment.experiment-detail-mode .step-dot {
+  min-width: 38px;
+  min-height: 34px;
+  padding: 6px;
+  border-radius: 9px;
+}
+
+.page-experiment.experiment-detail-mode .layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+
+.page-experiment.experiment-detail-mode .layout > .stack,
+.page-experiment.experiment-detail-mode .layout > aside {
+  display: contents;
+}
+
+.page-experiment.experiment-detail-mode .current-step-panel {
+  order: 1;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+
+.page-experiment.experiment-detail-mode #viscosityPanel {
+  order: 2;
+}
+
+.page-experiment.experiment-detail-mode #timelinePanel {
+  order: 3;
+}
+
+.page-experiment.experiment-detail-mode #deviationPanel {
+  order: 4;
+}
+
+.page-experiment.experiment-detail-mode #devicePanel {
+  order: 5;
+}
+
+.page-experiment.experiment-detail-mode #tracePanel {
+  order: 6;
+}
+
+.page-experiment.experiment-detail-mode .current-step-panel .panel-body {
+  padding: 0;
+}
+
+.page-experiment.experiment-detail-mode .current-step {
+  display: grid;
+  min-height: 420px;
+  padding: clamp(24px, 3.2vw, 46px);
+  background: rgba(6, 13, 18, 0.74);
+  border: 1px solid var(--pc-line-soft);
+  border-radius: 18px;
+}
+
+.page-experiment.experiment-detail-mode .current-step.has-step-device {
+  grid-template-columns: minmax(0, 1.08fr) minmax(370px, 0.92fr);
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: clamp(28px, 4vw, 60px);
+  align-items: start;
+}
+
+.page-experiment.experiment-detail-mode .current-step > .step-code {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.page-experiment.experiment-detail-mode .current-step > .step-name {
+  grid-column: 1;
+  grid-row: 2;
+  margin: 13px 0 16px;
+  font-size: clamp(38px, 4.2vw, 62px);
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+}
+
+.page-experiment.experiment-detail-mode .current-step > .hint {
+  grid-column: 1;
+  grid-row: 3;
+  max-width: 720px;
+  margin-bottom: 28px;
+  color: #a3adb5;
+  font-size: clamp(14px, 1.3vw, 18px);
+  line-height: 1.75;
+}
+
+.page-experiment.experiment-detail-mode .current-step > form,
+.page-experiment.experiment-detail-mode .current-step > .step-primary-action,
+.page-experiment.experiment-detail-mode .current-step > .inline-finding,
+.page-experiment.experiment-detail-mode .current-step > .chip {
+  grid-column: 1;
+  grid-row: 4;
+  align-self: end;
+}
+
+.page-experiment.experiment-detail-mode .current-step > form {
+  width: 100%;
+}
+
+.page-experiment.experiment-detail-mode .current-step > form > .action-row {
+  order: 10;
+}
+
+.page-experiment.experiment-detail-mode .current-step > form > .manual-fallback {
+  order: 20;
+}
+
+.page-experiment.experiment-detail-mode .current-step .step-primary-action {
+  position: relative;
+  width: 100%;
+  min-height: 118px;
+  justify-content: flex-start;
+  padding: 24px 30px 24px 106px;
+  overflow: hidden;
+  color: #03140f;
+  background: linear-gradient(135deg, #8ce9ce 0%, #62d9b6 100%);
+  border: 1px solid rgba(166, 247, 221, 0.8);
+  border-radius: 16px;
+  box-shadow: 0 18px 54px rgba(41, 188, 147, 0.13);
+  font-size: clamp(22px, 2.3vw, 34px);
+  font-weight: 760;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.page-experiment.experiment-detail-mode .current-step .step-primary-action::before {
+  position: absolute;
+  left: 28px;
+  top: 50%;
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  color: #89e8ca;
+  background: #071116;
+  border-radius: 50%;
+  content: "▶";
+  font-size: 22px;
+  transform: translateY(-50%);
+}
+
+.page-experiment.experiment-detail-mode .current-step .step-primary-action.is-complete::before {
+  content: "✓";
+  font-size: 27px;
+  font-weight: 800;
+}
+
+.page-experiment.experiment-detail-mode .current-step .step-primary-action:hover {
+  background: linear-gradient(135deg, #a0efd9 0%, #74dfc0 100%);
+  box-shadow: 0 22px 64px rgba(41, 188, 147, 0.19);
+}
+
+.page-experiment.experiment-detail-mode .step-device-surface {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+  align-self: stretch;
+  min-width: 0;
+  margin: 0;
+  padding: 24px;
+  background:
+    linear-gradient(150deg, rgba(13, 27, 35, 0.96), rgba(7, 16, 22, 0.94));
+  border: 1px solid rgba(160, 188, 198, 0.16);
+  border-radius: 16px;
+}
+
+.page-experiment.experiment-detail-mode .capture-header {
+  padding: 0 0 18px;
+  border-bottom: 1px solid var(--pc-line);
+}
+
+.page-experiment.experiment-detail-mode .capture-header strong {
+  font-size: 15px;
+}
+
+.page-experiment.experiment-detail-mode .capture-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.page-experiment.experiment-detail-mode .capture-source::before {
+  width: 8px;
+  height: 8px;
+  background: var(--pc-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgba(124, 227, 191, 0.6);
+  content: "";
+}
+
+.page-experiment.experiment-detail-mode .step-device-row {
+  display: block;
+  padding: 20px 0 18px;
+}
+
+.page-experiment.experiment-detail-mode .step-device-identity {
+  justify-content: flex-start;
+  min-height: 34px;
+}
+
+.page-experiment.experiment-detail-mode .step-device-identity::before {
+  display: inline-block;
+  width: 25px;
+  height: 25px;
+  border: 2px solid var(--pc-accent);
+  border-radius: 6px;
+  box-shadow: inset 0 -7px 0 rgba(124, 227, 191, 0.12);
+  content: "";
+}
+
+.page-experiment.experiment-detail-mode .step-device-identity strong {
+  font-size: 20px;
+}
+
+.page-experiment.experiment-detail-mode .step-device-identity > span {
+  margin-left: 2px;
+  font-size: 13px;
+}
+
+.page-experiment.experiment-detail-mode .step-device-identity .device-change {
+  margin-left: auto;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics {
+  margin-top: 18px;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics > div {
+  min-height: 74px;
+  padding: 6px 14px;
+  text-align: center;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics > div:first-child {
+  border-left: 0;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics span {
+  font-size: 11px;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics b {
+  margin-top: 7px;
+  overflow: visible;
+  font-size: clamp(20px, 1.8vw, 28px);
+  line-height: 1.08;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.page-experiment.experiment-detail-mode .step-live-metrics .metric-unit {
+  margin-top: 5px;
+  color: #d9e2e1;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.page-experiment .step-device-trend {
+  padding-top: 14px;
+  border-top: 1px solid var(--pc-line-soft);
+}
+
+.page-experiment .step-device-trend-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--pc-muted);
+  font-size: 11px;
+}
+
+.page-experiment .step-device-trend-heading small {
+  color: var(--pc-muted-2);
+}
+
+.page-experiment .device-mini-trend {
+  height: 128px;
+  margin: 10px 0 0;
+  background: transparent;
+  border: 0;
+}
+
+.page-experiment .step-device-trend-waiting {
+  display: flex;
+  height: 96px;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 20px 8px 8px;
+}
+
+.page-experiment .step-device-trend-waiting i {
+  flex: 1;
+  height: 18%;
+  background: rgba(124, 227, 191, 0.13);
+  border-radius: 4px 4px 0 0;
+}
+
+.page-experiment .step-device-trend-waiting i:nth-child(2) {
+  height: 28%;
+}
+
+.page-experiment .step-device-trend-waiting i:nth-child(3) {
+  height: 42%;
+}
+
+.page-experiment .step-device-trend-waiting i:nth-child(4) {
+  height: 58%;
+}
+
+.page-experiment .step-device-trend-waiting i:nth-child(5) {
+  height: 70%;
+}
+
+.page-experiment.experiment-detail-mode .execution-timeline-panel {
+  overflow: hidden;
+  background: rgba(7, 15, 20, 0.8);
+  border-radius: 16px;
+}
+
+.page-experiment.experiment-detail-mode .execution-timeline-panel .panel-head {
+  min-height: 64px;
+  padding: 15px 24px;
+}
+
+.page-experiment .execution-auto-capture {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--pc-muted);
+  font-size: 12px;
+}
+
+.page-experiment .execution-auto-capture i {
+  width: 9px;
+  height: 9px;
+  background: var(--pc-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgba(124, 227, 191, 0.5);
+}
+
+.page-experiment.experiment-detail-mode .timeline-panel .panel-body {
+  max-height: none;
+  padding: 10px 18px 18px;
+  overflow: visible;
+}
+
+.page-experiment.experiment-detail-mode .timeline-item {
+  grid-template-columns: 92px 20px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 72px;
+  padding: 8px 12px;
+  border-radius: 9px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-item.is-latest {
+  background: rgba(124, 227, 191, 0.06);
+}
+
+.page-experiment.experiment-detail-mode .timeline-time {
+  padding-top: 4px;
+  color: #9ca7af;
+  font-size: 13px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-marker::after {
+  left: 4px;
+  top: 4px;
+  width: 11px;
+  height: 11px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-marker::before {
+  left: 9px;
+  top: 13px;
+  bottom: -17px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-content b {
+  font-size: 15px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-content small {
+  margin-top: 5px;
+}
+
+.page-experiment.experiment-detail-mode .timeline-capture {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  color: #b9d9d1;
+  background: rgba(2, 10, 13, 0.45);
+  border: 1px solid rgba(124, 227, 191, 0.24);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.page-experiment .execution-alerts {
+  margin-bottom: 10px;
+}
+
+.page-experiment .execution-alert {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 16px 18px;
+  color: #ffe1a0;
+  background: linear-gradient(90deg, rgba(75, 48, 5, 0.42), rgba(27, 20, 8, 0.58));
+  border: 1px solid rgba(232, 168, 58, 0.72);
+  border-radius: 12px;
+}
+
+.page-experiment .execution-alert-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: #1c1200;
+  background: var(--pc-amber);
+  border-radius: 10px;
+  font-size: 24px;
+  font-weight: 850;
+}
+
+.page-experiment .execution-alert-copy strong {
+  color: #ffd166;
+  font-size: 14px;
+}
+
+.page-experiment .execution-alert-copy p {
+  margin: 4px 0 0;
+  color: #cbbd9c;
+  font-size: 12px;
+}
+
+.page-experiment .execution-alert-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.page-experiment.experiment-detail-mode #deviationPanel,
+.page-experiment.experiment-detail-mode #devicePanel,
+.page-experiment.experiment-detail-mode #tracePanel,
+.page-experiment.experiment-detail-mode #viscosityPanel {
+  border-radius: 16px;
+}
+
+@media (max-width: 1180px) {
+  .page-experiment.experiment-detail-mode .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 20px;
+  }
+
+  .page-experiment.experiment-detail-mode .brand {
+    min-width: 0;
+  }
+
+  .page-experiment.experiment-detail-mode .execution-header-summary {
+    grid-template-columns: minmax(170px, 0.7fr) minmax(300px, 1.3fr);
+    gap: 20px;
+  }
+
+  .page-experiment.experiment-detail-mode .account-menu-trigger {
+    min-width: 44px;
+    width: 44px;
+    padding: 6px 9px;
+  }
+
+  .page-experiment.experiment-detail-mode .account-menu-trigger-text {
+    display: none;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step.has-step-device {
+    grid-template-columns: minmax(0, 1fr) minmax(330px, 0.9fr);
+    column-gap: 28px;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-experiment.experiment-detail-mode .topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 0;
+  }
+
+  .page-experiment.experiment-detail-mode .brand {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .page-experiment.experiment-detail-mode .top-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .page-experiment.experiment-detail-mode .execution-header-summary {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 1.2fr);
+    padding-top: 10px;
+    border-top: 1px solid var(--pc-line-soft);
+  }
+
+  .page-experiment.experiment-detail-mode .current-step.has-step-device {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto auto;
+    min-height: 0;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > .step-code {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > .step-name {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > .hint {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > form,
+  .page-experiment.experiment-detail-mode .current-step > .step-primary-action,
+  .page-experiment.experiment-detail-mode .current-step > .inline-finding,
+  .page-experiment.experiment-detail-mode .current-step > .chip {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  .page-experiment.experiment-detail-mode .step-device-surface {
+    grid-column: 1;
+    grid-row: 5;
+    min-height: 330px;
+    margin-top: 24px;
+  }
+}
+
+@media (max-width: 600px) {
+  .page-experiment.experiment-detail-mode .topbar {
+    gap: 12px;
+    padding: 10px 14px 13px;
+  }
+
+  .page-experiment.experiment-detail-mode .brand img {
+    height: 34px;
+  }
+
+  .page-experiment.experiment-detail-mode .execution-scan,
+  .page-experiment.experiment-detail-mode .execution-exit {
+    min-height: 36px;
+    padding: 7px 9px;
+    font-size: 11px;
+  }
+
+  .page-experiment.experiment-detail-mode .execution-header-summary {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+
+  .page-experiment .execution-header-summary > strong {
+    text-align: left;
+  }
+
+  .page-experiment .execution-header-progress {
+    grid-template-columns: auto minmax(0, 1fr);
+    font-size: 12px;
+  }
+
+  .page-experiment.experiment-detail-mode main {
+    padding: 14px 12px 52px;
+  }
+
+  .page-experiment.experiment-detail-mode .hero {
+    display: none;
+  }
+
+  .page-experiment.experiment-detail-mode .progress-wrap {
+    margin: 0 0 12px;
+  }
+
+  .page-experiment.experiment-detail-mode .step-strip {
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .page-experiment.experiment-detail-mode .step-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step {
+    padding: 24px 18px;
+    border-radius: 14px;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > .step-name {
+    margin: 10px 0 12px;
+    font-size: clamp(32px, 10vw, 44px);
+  }
+
+  .page-experiment.experiment-detail-mode .current-step > .hint {
+    margin-bottom: 22px;
+    font-size: 14px;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step .step-primary-action {
+    min-height: 96px;
+    padding: 20px 18px 20px 82px;
+    font-size: 22px;
+  }
+
+  .page-experiment.experiment-detail-mode .current-step .step-primary-action::before {
+    left: 20px;
+    width: 48px;
+    height: 48px;
+  }
+
+  .page-experiment.experiment-detail-mode .step-device-surface {
+    min-height: 0;
+    padding: 18px;
+  }
+
+  .page-experiment.experiment-detail-mode .step-live-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .page-experiment.experiment-detail-mode .step-live-metrics > div {
+    min-height: 58px;
+    padding: 9px 0;
+    border-top: 1px solid var(--pc-line-soft);
+    border-left: 0;
+  }
+
+  .page-experiment.experiment-detail-mode .timeline-item {
+    grid-template-columns: 74px 14px minmax(0, 1fr);
+    gap: 8px;
+    padding-inline: 2px;
+  }
+
+  .page-experiment.experiment-detail-mode .timeline-time {
+    font-size: 11px;
+  }
+
+  .page-experiment .execution-auto-capture {
+    display: none;
+  }
+
+  .page-experiment .execution-alert {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .page-experiment .execution-alert-actions {
+    grid-column: 1 / -1;
+  }
+
+  .page-experiment .execution-alert-actions > button {
+    flex: 1 1 0;
   }
 }
 

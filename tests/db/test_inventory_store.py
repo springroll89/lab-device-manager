@@ -142,6 +142,9 @@ def test_inventory_summary_keeps_alert_details_hazards_and_last_adjustment():
         _item(
             quantity_remaining=2,
             hazards=["易燃", "有害/刺激"],
+            hazardous_status="listed",
+            controlled_categories=["易制毒第三类"],
+            is_controlled=True,
             expires_on="2024-08-20",
         )
     )
@@ -163,6 +166,9 @@ def test_inventory_summary_keeps_alert_details_hazards_and_last_adjustment():
     assert [row["id"] for row in summary["low_stock_items"]] == [item["id"]]
     assert [row["id"] for row in summary["expiring_items"]] == [item["id"]]
     assert summary["hazard_counts"] == {"易燃": 1, "有害/刺激": 1}
+    assert summary["hazardous"] == 1
+    assert summary["hazardous_status_counts"] == {"listed": 1}
+    assert summary["control_category_counts"] == {"易制毒第三类": 1}
     assert summary["last_adjust_at_ms"] == 1_722_470_400_000
     assert summary["days_since_last_adjust"] == 9
 

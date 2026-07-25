@@ -17,6 +17,18 @@ class InventoryError(ValueError):
 class InventoryService:
     CATEGORIES = {"chemical", "consumable", "office"}
     STATUSES = {"available", "empty", "quarantined", "expired", "disposed"}
+    HAZARDOUS_STATUSES = {
+        "not_assessed",
+        "listed",
+        "not_listed",
+        "pending_review",
+    }
+    CONTROL_CATEGORIES = {
+        "易制爆",
+        "易制毒第三类",
+        "剧毒",
+        "内部受控",
+    }
     MOVEMENTS = {
         "received",
         "issued",
@@ -77,6 +89,25 @@ class InventoryService:
             raise InventoryError(f"{field}必须是 http(s) 地址")
         return text
 
+    @classmethod
+    def _choice(cls, value, allowed: set[str], field: str) -> str:
+        text = cls._text(value)
+        if text not in allowed:
+            raise InventoryError(f"{field}无效")
+        return text
+
+    @classmethod
+    def _control_categories(cls, value) -> list[str]:
+        categories = value or []
+        if not isinstance(categories, list) or not all(
+            isinstance(item, str) for item in categories
+        ):
+            raise InventoryError("特殊管制类别必须是文本列表")
+        normalized = list(dict.fromkeys(item.strip() for item in categories))
+        if any(item not in cls.CONTROL_CATEGORIES for item in normalized):
+            raise InventoryError("特殊管制类别无效")
+        return normalized
+
     def create_item(self, data: dict) -> dict:
         category = self._text(
             data.get("category"), required=True, field="类别"
@@ -98,6 +129,17 @@ class InventoryService:
             isinstance(value, str) for value in hazards
         ):
             raise InventoryError("危险性必须是文本列表")
+        hazardous_status = self._choice(
+            data.get("hazardous_status") or "not_assessed",
+            self.HAZARDOUS_STATUSES,
+            "危化品判定",
+        )
+        controlled_categories = self._control_categories(
+            data.get("controlled_categories")
+        )
+        if category != "chemical":
+            hazardous_status = "not_assessed"
+            controlled_categories = []
         payload = {
             "container_code": self._text(data.get("code")),
             "external_barcode": self._text(data.get("external_barcode")) or None,
@@ -111,7 +153,9 @@ class InventoryService:
             "owner": self._text(data.get("owner")) or None,
             "min_threshold": minimum,
             "max_threshold": maximum,
-            "is_controlled": bool(data.get("is_controlled")),
+            "is_controlled": bool(
+                data.get("is_controlled") or controlled_categories
+            ),
             "status": "available" if quantity > 0 else "empty",
             "note": self._text(data.get("note")) or None,
             "supplier": self._text(data.get("supplier")) or None,
@@ -128,6 +172,8 @@ class InventoryService:
             "cas_no": self._text(data.get("cas_no")) or None,
             "spec": self._text(data.get("spec")) or None,
             "hazards": hazards if category == "chemical" else [],
+            "hazardous_status": hazardous_status,
+            "controlled_categories": controlled_categories,
             "sds_url": self._url(data.get("sds_url"), "SDS 链接")
             if category == "chemical"
             else None,
@@ -230,6 +276,25 @@ class InventoryService:
             raise InventoryError("库存下限不能高于库存上限")
         if "is_controlled" in data:
             updates["is_controlled"] = 1 if data["is_controlled"] else 0
+        if "hazardous_status" in data:
+            updates["hazardous_status"] = self._choice(
+                data.get("hazardous_status"),
+                self.HAZARDOUS_STATUSES,
+                "危化品判定",
+            )
+        if "controlled_categories" in data:
+            controlled_categories = self._control_categories(
+                data.get("controlled_categories")
+            )
+            updates["controlled_categories_json"] = json.dumps(
+                controlled_categories,
+                ensure_ascii=False,
+            )
+            updates["is_controlled"] = (
+                1
+                if controlled_categories or data.get("is_controlled")
+                else 0
+            )
         for exposed, stored, label in (
             ("expiry_date", "expires_on", "有效期"),
             ("opened_date", "opened_on", "开封日期"),
@@ -260,6 +325,9 @@ class InventoryService:
                     "expires_on": None,
                     "prepared_by": None,
                     "prepared_date": None,
+                    "hazardous_status": "not_assessed",
+                    "controlled_categories_json": "[]",
+                    "is_controlled": 0,
                 }
             )
         updates["updated_at_ms"] = self.clock_ms()

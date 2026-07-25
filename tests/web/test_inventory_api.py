@@ -23,7 +23,7 @@ def _app():
     return app, repo
 
 
-def _create(client, **overrides):
+def _create_payload(**overrides):
     body = {
         "name": "无水乙醇",
         "category": "chemical",
@@ -34,6 +34,8 @@ def _create(client, **overrides):
         "min_threshold": 3,
         "max_threshold": 20,
         "is_controlled": True,
+        "hazardous_status": "listed",
+        "controlled_categories": ["易制毒第三类"],
         "cas_no": "64-17-5",
         "spec": "AR 99.7%",
         "hazards": ["易燃"],
@@ -43,6 +45,11 @@ def _create(client, **overrides):
         "client_event_id": f"create-{time.time_ns()}",
     }
     body.update(overrides)
+    return body
+
+
+def _create(client, **overrides):
+    body = _create_payload(**overrides)
     response = client.post("/api/inventory/items", json=body)
     assert response.status_code == 201
     return response.get_json()
@@ -113,6 +120,10 @@ def test_inventory_filters_dashboard_detail_and_audit():
     assert summary.get_json()["low_stock"] == 1
     assert summary.get_json()["expiring"] == 1
     assert detail.get_json()["item"]["hazards"] == ["易燃"]
+    assert detail.get_json()["item"]["hazardous_status"] == "listed"
+    assert detail.get_json()["item"]["controlled_categories"] == [
+        "易制毒第三类"
+    ]
     assert audit.get_json()["movements"][0]["action"] == "registered"
 
 
@@ -201,6 +212,26 @@ def test_inventory_validates_category_units_dates_and_urls():
     assert invalid_sds.status_code == 400
     assert invalid_threshold.status_code == 400
 
+    invalid_hazardous_status = client.post(
+        "/api/inventory/items",
+        json={
+            **_create_payload(),
+            "client_event_id": "invalid-hazardous-status",
+            "hazardous_status": "definitely-dangerous",
+        },
+    )
+    invalid_control_category = client.post(
+        "/api/inventory/items",
+        json={
+            **_create_payload(),
+            "client_event_id": "invalid-control-category",
+            "controlled_categories": ["未定义类别"],
+        },
+    )
+
+    assert invalid_hazardous_status.status_code == 400
+    assert invalid_control_category.status_code == 400
+
 
 def test_inventory_item_can_be_edited_without_changing_identity_or_balance():
     app, _ = _app()
@@ -215,6 +246,8 @@ def test_inventory_item_can_be_edited_without_changing_identity_or_balance():
             "min_threshold": 2,
             "max_threshold": 12,
             "hazards": ["易燃", "有害/刺激"],
+            "hazardous_status": "pending_review",
+            "controlled_categories": ["内部受控"],
         },
     )
 
@@ -225,6 +258,9 @@ def test_inventory_item_can_be_edited_without_changing_identity_or_balance():
     assert updated["material_name"] == "无水乙醇（新供应商）"
     assert updated["location"] == "危化品柜 B2"
     assert updated["hazards"] == ["易燃", "有害/刺激"]
+    assert updated["hazardous_status"] == "pending_review"
+    assert updated["controlled_categories"] == ["内部受控"]
+    assert updated["is_controlled"] is True
 
 
 def test_operator_can_view_and_issue_but_cannot_manage_inventory():
