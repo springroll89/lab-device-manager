@@ -426,6 +426,7 @@ class AuthManager:
                 "role_label": ROLE_LABELS[role],
                 "must_change_password": user["must_change_password"],
                 "can_manage_accounts": role in MANAGEMENT_ROLES,
+                "can_delete_experiments": role == "super_admin",
                 "csrf_token": self._csrf_token(),
             }
         )

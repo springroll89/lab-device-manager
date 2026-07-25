@@ -43,6 +43,8 @@
     <div class="toolbar">
       <button id="openInventoryScanner" class="btn primary" type="button">扫码</button>
       <button id="openItemForm" class="btn primary" type="button">新增物品</button>
+      <a id="printInventoryLabels" class="btn" href="#" target="_blank" rel="noopener">打印当前列表标签</a>
+      <a id="printStorageLocationLabels" class="btn" href="#" target="_blank" rel="noopener">打印库位标签</a>
       <a class="btn" href="/api/inventory/export.csv">导出 CSV</a>
       <a class="btn" href="/api/inventory/disposal.csv">导出待处置清单</a>
       <button id="refreshInventory" class="btn" type="button">刷新</button>
@@ -102,6 +104,8 @@
       <section id="chemicalFields" class="full form-grid">
         <div class="field"><label for="itemCas">CAS 号</label><div class="inline"><input id="itemCas"><button id="lookupCas" class="btn small" type="button">自动识别</button></div></div>
         <div class="field"><label for="itemSpec">规格/包装</label><input id="itemSpec"></div>
+        <div class="field"><label for="itemHazardousStatus">危化品判定</label><select id="itemHazardousStatus"><option value="not_assessed">未评估</option><option value="listed">列入危险化学品目录</option><option value="not_listed">按 CAS 未在目录检出</option><option value="pending_review">待 SDS / 法规核验</option></select></div>
+        <div class="field full"><span class="muted">特殊管制类别</span><div id="itemControlledCategories" class="hazards"></div></div>
         <div class="field"><label for="itemSds">SDS 链接</label><input id="itemSds" type="url"></div>
         <div class="field"><label for="itemExpiry">有效期</label><input id="itemExpiry" type="date"></div>
         <div class="field"><label for="itemOpened">开封日期</label><input id="itemOpened" type="date"></div>

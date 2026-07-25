@@ -52,16 +52,39 @@ from lab_device_manager.web.barcode import (
 )
 from lab_device_manager.web.trace_labels import (
     material_container_label_html,
+    material_container_labels_html,
     material_container_qr_payload,
     qr_png,
     storage_location_qr_payload,
     storage_location_label_html,
+    storage_location_labels_html,
     trace_qr_payload,
     trace_labels_html,
 )
 from lab_device_manager.web.whd46 import create_whd46_blueprint
 
 _MAX_RUN_LIMIT = 1000
+
+
+def _label_request_args() -> tuple[list[int], int]:
+    try:
+        requested_ids = [
+            int(value)
+            for value in request.args.get("ids", "").split(",")
+            if value.strip()
+        ]
+        copies = int(request.args.get("copies", "1"))
+    except ValueError as exc:
+        raise R201Error("ids and copies must be integers") from exc
+    if not requested_ids:
+        raise R201Error("ids must contain at least one item")
+    if len(requested_ids) > 100:
+        raise R201Error("no more than 100 labels can be printed at once")
+    if any(item_id <= 0 for item_id in requested_ids):
+        raise R201Error("ids must be positive integers")
+    if not 1 <= copies <= 20:
+        raise R201Error("copies must be between 1 and 20")
+    return list(dict.fromkeys(requested_ids)), copies
 
 
 def _snap_to_dict(snap):
@@ -1072,6 +1095,15 @@ def create_app(
         except (R201Error, sqlite3.IntegrityError) as exc:
             return _r201_error(exc)
 
+    @app.delete("/api/experiments/<int:experiment_id>")
+    @auth.roles_required("super_admin")
+    @auth.csrf_required
+    def api_delete_experiment(experiment_id):
+        try:
+            return jsonify(r201.delete_experiment(experiment_id))
+        except R201Error as exc:
+            return _r201_error(exc)
+
     @app.get("/api/experiments/<int:experiment_id>")
     def api_experiment_detail(experiment_id):
         try:
@@ -1193,6 +1225,23 @@ def create_app(
     @app.get("/api/storage-locations")
     def api_storage_locations():
         return jsonify(r201.list_storage_locations())
+
+    @app.get("/api/storage-locations/labels")
+    def api_print_storage_location_labels():
+        try:
+            requested_ids, copies = _label_request_args()
+            locations = []
+            for location_id in requested_ids:
+                location = repo.experiments.get_storage_location(location_id)
+                if location is None:
+                    raise R201Error("storage location not found", 404)
+                locations.append(location)
+            return Response(
+                storage_location_labels_html(locations, copies),
+                mimetype="text/html",
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
 
     @app.post("/api/storage-locations")
     def api_create_storage_location():
@@ -1476,6 +1525,8 @@ def create_app(
                 "有效期",
                 "状态",
                 "是否管制",
+                "危化判定",
+                "特殊管制",
                 "CAS号",
                 "危险性",
             ]
@@ -1494,6 +1545,10 @@ def create_app(
                     item.get("expires_on") or "",
                     item["status"],
                     "是" if item["is_controlled"] else "否",
+                    item.get("hazardous_status") or "not_assessed",
+                    _csv_safe(
+                        " / ".join(item.get("controlled_categories") or [])
+                    ),
                     _csv_safe(item.get("cas_no") or ""),
                     _csv_safe(" / ".join(item.get("hazards") or [])),
                 ]
@@ -1547,6 +1602,23 @@ def create_app(
             return jsonify(inventory.list_items({"category": "chemical"}))
         except InventoryError as exc:
             return _inventory_error(exc)
+
+    @app.get("/api/material-containers/labels")
+    def api_material_container_labels():
+        try:
+            requested_ids, copies = _label_request_args()
+            containers = []
+            for container_id in requested_ids:
+                container = repo.inventory.get_item(container_id)
+                if container is None:
+                    raise R201Error("material container not found", 404)
+                containers.append(container)
+            return Response(
+                material_container_labels_html(containers, copies),
+                mimetype="text/html",
+            )
+        except R201Error as exc:
+            return _r201_error(exc)
 
     @app.post("/api/material-containers")
     @auth.roles_required("super_admin", "supervisor")

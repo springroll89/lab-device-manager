@@ -15,9 +15,15 @@ const ACTION_LABELS = {
 const HAZARDS = [
   "易燃","易爆","氧化","有毒","腐蚀","反应性","有害/刺激","环境危害"
 ];
+const CONTROL_CATEGORIES = ["易制爆","易制毒第三类","剧毒","内部受控"];
+const HAZARDOUS_STATUS_LABELS = {
+  not_assessed:"未评估", listed:"危险化学品",
+  not_listed:"未在目录检出", pending_review:"待法规核验"
+};
 const inventoryState = {
   items:[], summary:null, movements:[], movementTotal:0,
-  movementOffset:0, movementLimit:50, session:null, selected:null
+  movementOffset:0, movementLimit:50, session:null, selected:null,
+  locations:[]
 };
 
 function inventoryEventId(prefix) {
@@ -72,6 +78,7 @@ function renderSummary() {
   const summary = inventoryState.summary || {};
   const cards = [
     ["物品总数","total_items",""],
+    ["危险化学品","hazardous","danger"],
     ["低库存","low_stock","warn"],
     ["库存超量","over_stock","warn"],
     ["30 天内临期","expiring","warn"],
@@ -152,6 +159,23 @@ function renderItems() {
   body.textContent = "";
   inventoryById("inventoryCount").textContent =
     `共 ${inventoryState.items.length} 条`;
+  const printLink = inventoryById("printInventoryLabels");
+  const printIds = inventoryState.items
+    .filter(item => item.category === "chemical")
+    .map(item => item.id)
+    .join(",");
+  printLink.href = printIds
+    ? `/api/material-containers/labels?ids=${encodeURIComponent(printIds)}`
+    : "#";
+  printLink.hidden = !printIds;
+  const locationPrintLink = inventoryById("printStorageLocationLabels");
+  const locationIds = inventoryState.locations
+    .map(location => location.id)
+    .join(",");
+  locationPrintLink.href = locationIds
+    ? `/api/storage-locations/labels?ids=${encodeURIComponent(locationIds)}`
+    : "#";
+  locationPrintLink.hidden = !locationIds;
   if (!inventoryState.items.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -170,7 +194,9 @@ function renderItems() {
       item.container_code,
       item.material_name,
       CATEGORY_LABELS[item.category] || item.category,
-      `${item.quantity_remaining ?? 0} ${item.unit || ""}`.trim(),
+      item.quantity_remaining == null
+        ? "待盘点"
+        : `${item.quantity_remaining} ${item.unit || ""}`.trim(),
       item.location || "—",
       `${item.supplier_lot || "—"} / ${item.expires_on || "—"}`
     ];
@@ -182,6 +208,11 @@ function renderItems() {
     statusCell.appendChild(statusBadge);
     if (item.is_controlled) {
       statusCell.append(" ", textElement("span", "管制", "badge controlled"));
+    }
+    if (item.hazardous_status === "listed") {
+      statusCell.append(" ", textElement("span", "危化品", "badge controlled"));
+    } else if (item.hazardous_status === "pending_review") {
+      statusCell.append(" ", textElement("span", "待核验", "badge"));
     }
     const actionCell = document.createElement("td");
     const detail = textElement("button", "详情", "btn small");
@@ -288,17 +319,19 @@ async function loadInventory() {
   setInventoryStatus("正在读取库存…");
   const query = filtersQuery();
   const auditParams = auditQuery();
-  const [summary,items,audit,session] = await Promise.all([
+  const [summary,items,audit,session,locations] = await Promise.all([
     inventoryApi("/api/inventory/summary"),
     inventoryApi(`/api/inventory/items${query ? `?${query}` : ""}`),
     inventoryApi(`/api/inventory/movements?${auditParams}`),
-    inventoryApi("/api/session")
+    inventoryApi("/api/session"),
+    inventoryApi("/api/storage-locations")
   ]);
   inventoryState.summary = summary;
   inventoryState.items = items;
   inventoryState.movements = audit.movements;
   inventoryState.movementTotal = audit.total;
   inventoryState.session = session;
+  inventoryState.locations = locations;
   inventoryById("openItemForm").hidden = !canManageInventory();
   renderSummary();
   renderAlertDetails();
@@ -334,6 +367,20 @@ function renderHazardOptions(selected = []) {
   });
 }
 
+function renderControlCategoryOptions(selected = []) {
+  const host = inventoryById("itemControlledCategories");
+  host.textContent = "";
+  CONTROL_CATEGORIES.forEach(category => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = category;
+    input.checked = selected.includes(category);
+    label.append(input, document.createTextNode(category));
+    host.appendChild(label);
+  });
+}
+
 function toggleChemicalFields() {
   inventoryById("chemicalFields").hidden =
     inventoryById("itemCategory").value !== "chemical";
@@ -357,6 +404,8 @@ function resetItemForm(item = null) {
   inventoryById("itemExternalBarcode").value = item?.external_barcode || "";
   inventoryById("itemLot").value = item?.supplier_lot || "";
   inventoryById("itemControlled").checked = Boolean(item?.is_controlled);
+  inventoryById("itemHazardousStatus").value =
+    item?.hazardous_status || "not_assessed";
   inventoryById("itemCas").value = item?.cas_no || "";
   inventoryById("itemSpec").value = item?.spec || "";
   inventoryById("itemSds").value = item?.sds_url || "";
@@ -366,6 +415,7 @@ function resetItemForm(item = null) {
   inventoryById("itemPreparedDate").value = item?.prepared_date || "";
   inventoryById("itemNote").value = item?.note || "";
   renderHazardOptions(item?.hazards || []);
+  renderControlCategoryOptions(item?.controlled_categories || []);
   toggleChemicalFields();
   setInventoryStatus("", false, "itemFormStatus");
 }
@@ -387,6 +437,11 @@ function itemFormPayload() {
     external_barcode:inventoryById("itemExternalBarcode").value || null,
     lot_no:inventoryById("itemLot").value || null,
     is_controlled:inventoryById("itemControlled").checked,
+    hazardous_status:inventoryById("itemHazardousStatus").value,
+    controlled_categories:[
+      ...inventoryById("itemControlledCategories")
+        .querySelectorAll("input:checked")
+    ].map(input => input.value),
     cas_no:inventoryById("itemCas").value || null,
     spec:inventoryById("itemSpec").value || null,
     sds_url:inventoryById("itemSds").value || null,
@@ -442,7 +497,9 @@ async function openInventoryDetail(itemId) {
   grid.className = "detail-grid";
   [
     ["类别",CATEGORY_LABELS[item.category] || item.category],
-    ["当前库存",`${item.quantity_remaining} ${item.unit}`],
+    ["当前库存",item.quantity_remaining == null
+      ? "待盘点"
+      : `${item.quantity_remaining} ${item.unit}`],
     ["状态",STATUS_LABELS[itemStatus(item)] || itemStatus(item)],
     ["位置",item.location],
     ["负责人",item.owner],
@@ -451,6 +508,10 @@ async function openInventoryDetail(itemId) {
     ["CAS",item.cas_no],
     ["规格",item.spec],
     ["危险性",(item.hazards || []).join(" / ")],
+    ["危化品判定",HAZARDOUS_STATUS_LABELS[item.hazardous_status]
+      || item.hazardous_status],
+    ["特殊管制",(item.controlled_categories || []).join(" / ")],
+    ["登记人",item.created_by],
     ["SDS",item.sds_url],
     ["开封日期",item.opened_on]
   ].forEach(([label,value]) => appendDetailValue(grid,label,String(value || "—")));
@@ -472,7 +533,9 @@ async function openInventoryDetail(itemId) {
     ) return;
     const button = textElement("button", label, `btn ${tone}`);
     button.type = "button";
-    button.disabled = action === "issued" && item.status !== "available";
+    button.disabled = action === "issued" && (
+      item.status !== "available" || item.quantity_remaining == null
+    );
     button.addEventListener("click", () => openOperation(item,action,label));
     actions.appendChild(button);
   });
@@ -673,6 +736,7 @@ function wireInventoryEvents() {
 
 wireInventoryEvents();
 renderHazardOptions();
+renderControlCategoryOptions();
 loadInventory().then(async () => {
   const scanned = new URLSearchParams(location.search).get("scan");
   if (scanned) await acceptInventoryScan(scanned);

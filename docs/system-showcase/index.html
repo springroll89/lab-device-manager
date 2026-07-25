@@ -1,0 +1,1559 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:,">
+  <title>陶瓷膜实验管理系统 · 周会功能展示</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05090c;
+      --panel: #0b1115;
+      --panel-2: #0f171c;
+      --line: #243138;
+      --line-soft: rgba(255,255,255,.09);
+      --text: #f1f5f4;
+      --muted: #8b9ba1;
+      --muted-2: #66767d;
+      --mint: #8fe1c2;
+      --mint-strong: #55cca2;
+      --amber: #d6b270;
+      --danger: #ef8f8f;
+      --rail: 76px;
+      --ease: cubic-bezier(.22,.8,.24,1);
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    }
+
+    button,
+    a { font: inherit; }
+
+    button { color: inherit; }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--rail) minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+    }
+
+    .rail {
+      position: relative;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      min-height: 0;
+      padding: 20px 0 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(5, 9, 12, .96);
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(143, 225, 194, .5);
+      border-radius: 50%;
+      color: var(--mint);
+      font-weight: 800;
+      letter-spacing: -.08em;
+    }
+
+    .rail-label {
+      color: var(--muted-2);
+      font-size: 9px;
+      letter-spacing: .24em;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+    }
+
+    .rail-dots {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      overflow: hidden;
+    }
+
+    .rail-dot {
+      width: 5px;
+      height: 5px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: #536168;
+      opacity: .55;
+      cursor: pointer;
+      transition: height .2s var(--ease), opacity .2s, background .2s;
+    }
+
+    .rail-dot.is-active {
+      height: 22px;
+      background: var(--mint);
+      opacity: 1;
+    }
+
+    .icon-button {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      cursor: pointer;
+      transition: border-color .18s, color .18s;
+    }
+
+    .icon-button:hover {
+      border-color: var(--mint);
+      color: var(--mint);
+    }
+
+    .deck {
+      position: relative;
+      min-width: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: clamp(14px, 2vh, 24px);
+      padding: clamp(24px, 4vw, 64px) clamp(26px, 5vw, 76px) 34px;
+      visibility: hidden;
+      opacity: 0;
+      transform: translateX(34px);
+      pointer-events: none;
+      transition: opacity .35s var(--ease), transform .42s var(--ease),
+        visibility 0s linear .42s;
+    }
+
+    .slide.is-active {
+      visibility: visible;
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+      transition-delay: 0s;
+    }
+
+    .slide.was-active {
+      transform: translateX(-34px);
+    }
+
+    .slide-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 10px;
+      color: var(--mint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    .section-label::before {
+      width: 26px;
+      height: 2px;
+      background: var(--mint);
+      content: "";
+    }
+
+    h1,
+    h2,
+    h3,
+    p { margin-top: 0; }
+
+    h1,
+    h2 {
+      margin-bottom: 0;
+      letter-spacing: -.035em;
+      line-height: 1.08;
+    }
+
+    h1 { font-size: clamp(38px, 5.4vw, 78px); }
+
+    h2 { font-size: clamp(30px, 3.5vw, 53px); }
+
+    h3 {
+      margin-bottom: 7px;
+      font-size: clamp(16px, 1.35vw, 21px);
+      line-height: 1.25;
+    }
+
+    p {
+      color: var(--muted);
+      font-size: clamp(12px, 1vw, 16px);
+      line-height: 1.65;
+    }
+
+    .slide-no {
+      flex: 0 0 auto;
+      color: var(--muted-2);
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .12em;
+    }
+
+    .slide-body {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1.8fr) minmax(260px, .72fr);
+      gap: clamp(18px, 2.6vw, 38px);
+      height: 100%;
+      min-height: 0;
+      align-items: stretch;
+    }
+
+    .split.text-first {
+      grid-template-columns: minmax(270px, .72fr) minmax(0, 1.75fr);
+    }
+
+    .split.equal {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .shot {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #020507;
+      box-shadow: 0 18px 50px rgba(0,0,0,.32);
+      cursor: zoom-in;
+    }
+
+    .shot::after {
+      position: absolute;
+      inset: 0;
+      border: 1px solid rgba(255,255,255,.05);
+      border-radius: inherit;
+      pointer-events: none;
+      content: "";
+    }
+
+    .shot img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center top;
+    }
+
+    .shot.contain img {
+      object-fit: contain;
+      background: #05090c;
+    }
+
+    .shot.position-left img { object-position: left top; }
+
+    .shot.position-right img { object-position: right top; }
+
+    .shot-tag {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 2;
+      padding: 6px 9px;
+      border: 1px solid rgba(143,225,194,.38);
+      border-radius: 8px;
+      background: rgba(5,9,12,.88);
+      color: var(--mint);
+      font-size: 10px;
+      letter-spacing: .08em;
+    }
+
+    .shot-tag.neutral {
+      border-color: rgba(255,255,255,.16);
+      color: #c8d0d2;
+    }
+
+    .note-column {
+      display: flex;
+      min-height: 0;
+      flex-direction: column;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .fact {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 12px;
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .fact:first-child { border-top: 0; }
+
+    .fact-index {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      border: 1px solid rgba(143,225,194,.45);
+      border-radius: 50%;
+      color: var(--mint);
+      font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .fact p { margin-bottom: 0; }
+
+    .fact strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--text);
+      font-size: clamp(13px, 1vw, 16px);
+    }
+
+    .metric-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .metric-item {
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(11,17,21,.88);
+    }
+
+    .metric-item span {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .metric-item b {
+      color: var(--text);
+      font-size: clamp(13px, 1vw, 16px);
+    }
+
+    .step-list {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .step-list li {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(11,17,21,.9);
+      font-size: clamp(10px, .8vw, 13px);
+      line-height: 1.3;
+    }
+
+    .step-list b {
+      flex: 0 0 auto;
+      color: var(--mint);
+      font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .mini-flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .mini-flow > div {
+      position: relative;
+      min-height: 76px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel);
+    }
+
+    .mini-flow > div:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -8px;
+      z-index: 2;
+      width: 8px;
+      height: 1px;
+      background: var(--mint);
+      content: "";
+    }
+
+    .mini-flow b {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--mint);
+      font-size: 11px;
+    }
+
+    .mini-flow span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .two-shots {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      min-height: 0;
+      height: 100%;
+    }
+
+    .two-shots .shot { min-height: 0; }
+
+    .callout {
+      padding: 15px 16px;
+      border-left: 3px solid var(--mint);
+      background: rgba(143,225,194,.07);
+    }
+
+    .callout.warning {
+      border-color: var(--amber);
+      background: rgba(214,178,112,.08);
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 28px;
+      color: var(--muted-2);
+      font-size: 10px;
+      letter-spacing: .04em;
+    }
+
+    .footer-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    kbd {
+      display: inline-grid;
+      min-width: 24px;
+      height: 22px;
+      place-items: center;
+      padding: 0 6px;
+      border: 1px solid var(--line);
+      border-bottom-color: #3a4950;
+      border-radius: 6px;
+      background: var(--panel);
+      color: #b8c3c6;
+      font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .cover {
+      padding-top: clamp(34px, 6vw, 92px);
+    }
+
+    .cover .slide-body {
+      display: grid;
+      grid-template-columns: minmax(330px, .84fr) minmax(0, 1.35fr);
+      gap: clamp(26px, 5vw, 78px);
+      align-items: center;
+    }
+
+    .cover-copy {
+      position: relative;
+      z-index: 2;
+    }
+
+    .cover-copy p {
+      max-width: 560px;
+      margin: 24px 0 28px;
+      font-size: clamp(15px, 1.25vw, 19px);
+    }
+
+    .cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #bac5c8;
+      font-size: 11px;
+    }
+
+    .cover .shot {
+      height: min(70vh, 690px);
+      transform: perspective(1200px) rotateY(-3deg);
+      cursor: zoom-in;
+    }
+
+    .scope-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .scope-card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .scope-card b {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--mint);
+      font-size: 13px;
+    }
+
+    .scope-card p {
+      margin-bottom: 0;
+      font-size: 12px;
+    }
+
+    .status-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: clamp(10px, .85vw, 13px);
+    }
+
+    .status-table th,
+    .status-table td {
+      padding: 10px 9px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .status-table th {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .08em;
+    }
+
+    .status-table td:first-child {
+      color: var(--mint);
+      font-weight: 700;
+    }
+
+    .status-table td:last-child { color: #c3cdcf; }
+
+    .toc {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(330px, 38vw);
+      visibility: hidden;
+      background: rgba(0,0,0,.68);
+      opacity: 0;
+      transition: opacity .24s, visibility 0s linear .24s;
+    }
+
+    .toc.is-open {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 0s;
+    }
+
+    .toc-backdrop { cursor: default; }
+
+    .toc-panel {
+      display: flex;
+      min-height: 0;
+      flex-direction: column;
+      padding: 24px;
+      border-left: 1px solid var(--line);
+      background: #090f13;
+      transform: translateX(28px);
+      transition: transform .28s var(--ease);
+    }
+
+    .toc.is-open .toc-panel { transform: translateX(0); }
+
+    .toc-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .toc-head h2 { font-size: 25px; }
+
+    .toc-list {
+      display: grid;
+      gap: 5px;
+      overflow: auto;
+    }
+
+    .toc-item {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: #b9c4c7;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .toc-item:hover,
+    .toc-item.is-active {
+      border-color: var(--line);
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    .toc-item b {
+      color: var(--mint);
+      font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: grid;
+      place-items: center;
+      visibility: hidden;
+      padding: 24px;
+      background: rgba(0,0,0,.9);
+      opacity: 0;
+      transition: opacity .22s, visibility 0s linear .22s;
+    }
+
+    .lightbox.is-open {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 0s;
+    }
+
+    .lightbox img {
+      display: block;
+      max-width: 96vw;
+      max-height: 92vh;
+      border: 1px solid var(--line);
+      background: #000;
+      object-fit: contain;
+      box-shadow: 0 30px 100px rgba(0,0,0,.6);
+    }
+
+    .lightbox button {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+    }
+
+    .progress {
+      position: fixed;
+      right: 0;
+      bottom: 0;
+      left: var(--rail);
+      z-index: 40;
+      height: 3px;
+      background: rgba(255,255,255,.05);
+    }
+
+    .progress-value {
+      width: 0;
+      height: 100%;
+      background: var(--mint);
+      transition: width .3s var(--ease);
+    }
+
+    @media (max-width: 900px) {
+      :root { --rail: 56px; }
+      .rail { padding-top: 12px; }
+      .brand-mark { width: 34px; height: 34px; font-size: 12px; }
+      .rail-label { display: none; }
+      .slide {
+        overflow-y: auto;
+        padding: 22px 18px 34px;
+      }
+      .slide-body { overflow: visible; }
+      .split,
+      .split.text-first,
+      .split.equal,
+      .cover .slide-body {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+      .shot { min-height: 360px; }
+      .cover .shot {
+        height: 420px;
+        transform: none;
+      }
+      .step-list { grid-template-columns: repeat(2, 1fr); }
+      .footer-key { display: none; }
+      .two-shots { min-height: 520px; }
+    }
+
+    @media (max-width: 620px) {
+      .app { grid-template-columns: 1fr; }
+      .rail {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        left: auto;
+        width: auto;
+        height: auto;
+        min-height: 0;
+        flex-direction: row;
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .brand-mark,
+      .rail-dots { display: none; }
+      .progress { left: 0; }
+      .slide { padding-inline: 16px; }
+      .slide-head { gap: 12px; }
+      .metric-list,
+      .scope-grid,
+      .step-list,
+      .mini-flow { grid-template-columns: 1fr; }
+      .two-shots { grid-template-columns: 1fr; min-height: 760px; }
+      .toc { grid-template-columns: 1fr; }
+      .toc-backdrop { display: none; }
+    }
+
+    @media print {
+      html,
+      body {
+        height: auto;
+        overflow: visible;
+        background: #fff;
+      }
+      .app { display: block; background: #05090c; }
+      .rail,
+      .progress,
+      .toc,
+      .lightbox { display: none !important; }
+      .deck { height: auto; overflow: visible; }
+      .slide {
+        position: relative;
+        inset: auto;
+        width: 100%;
+        min-height: 100vh;
+        visibility: visible;
+        break-after: page;
+        opacity: 1;
+        transform: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="演示控制">
+      <div class="brand-mark" aria-label="Puricore">P</div>
+      <span class="rail-label">SYSTEM SHOWCASE</span>
+      <nav id="railDots" class="rail-dots" aria-label="幻灯片"></nav>
+      <button id="tocButton" class="icon-button" type="button" aria-label="打开目录" title="目录（G）">≡</button>
+      <button id="fullscreenButton" class="icon-button" type="button" aria-label="全屏" title="全屏（F）">⛶</button>
+    </aside>
+
+    <main id="deck" class="deck">
+      <section class="slide cover is-active" data-title="周会功能展示" data-section="开场">
+        <header class="slide-head">
+          <div class="section-label">Puricore · 当前开发版本</div>
+          <div class="slide-no">01 / 22</div>
+        </header>
+        <div class="slide-body">
+          <div class="cover-copy">
+            <h1>陶瓷膜实验<br>管理系统</h1>
+            <p>本次只展示已经做进系统的功能：设备采集、实验步骤打标、批次记录、实物标签与数据导出。</p>
+            <div class="cover-meta">
+              <span class="chip">周会功能展示</span>
+              <span class="chip">2026.07</span>
+              <span class="chip">R-201 湿化学合成</span>
+            </div>
+          </div>
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/10-online-device-dashboard.jpg" alt="八台设备在线的设备采集看板">
+          </figure>
+        </div>
+        <footer class="footer">
+          <span>截图来自当前系统；在线数值为隔离演示数据，不是正式实验记录。</span>
+          <span class="footer-key"><kbd>←</kbd><kbd>→</kbd> 翻页　<kbd>F</kbd> 全屏　<kbd>G</kbd> 目录</span>
+        </footer>
+      </section>
+
+      <section class="slide" data-title="系统现在包含什么" data-section="总览">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">总览</div>
+            <h2>系统现在包含什么</h2>
+          </div>
+          <div class="slide-no">02 / 22</div>
+        </header>
+        <div class="slide-body split text-first">
+          <div class="note-column">
+            <div class="scope-grid">
+              <div class="scope-card"><b>设备采集</b><p>8 台设备分类型显示在线状态和专属读数。</p></div>
+              <div class="scope-card"><b>实验执行</b><p>15 个步骤按顺序推进，平板负责打时间点。</p></div>
+              <div class="scope-card"><b>批次数据</b><p>设备读数、人工确认、异常与时间线归到同一批次。</p></div>
+              <div class="scope-card"><b>实物追溯</b><p>批次、中间品、成品和存储位置都有独立标签。</p></div>
+            </div>
+            <div class="callout">
+              <h3>两条线在同一个批次里汇合</h3>
+              <p>实验员做实际操作；设备持续上传数据；点击步骤按钮只负责标明“这一段数据是什么用途”。</p>
+            </div>
+          </div>
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">系统批次首页</span>
+            <img src="assets/screenshots/19-demo-batch-list.jpg" alt="创建实验批次和最近批次列表">
+          </figure>
+        </div>
+        <footer class="footer"><span>功能范围：设备、实验、批次、实物</span><span>02</span></footer>
+      </section>
+
+      <section class="slide" data-title="登录后自动确定操作员" data-section="批次">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">批次 · 身份</div>
+            <h2>登录后自动确定操作员</h2>
+          </div>
+          <div class="slide-no">03 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot contain" data-zoom>
+            <span class="shot-tag neutral">当前登录页</span>
+            <img src="assets/screenshots/09-login.jpg" alt="系统操作员登录页面">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>输入操作员账号</strong><p>进入系统后，批次中的操作员直接取当前登录账号。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>减少重复填写</strong><p>每一步不再重新输入姓名，系统自动写入时间线。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>复核员可以为空</strong><p>当前流程允许操作员确认并锁定；需要复核时再配置独立账号。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>身份信息来自登录会话</span><span>03</span></footer>
+      </section>
+
+      <section class="slide" data-title="批次号自动生成" data-section="批次">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">批次 · 建批</div>
+            <h2>批次号自动生成</h2>
+          </div>
+          <div class="slide-no">04 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">当前界面</span>
+            <img src="assets/screenshots/19-demo-batch-list.jpg" alt="自动生成批次号的创建批次页面">
+          </figure>
+          <div class="note-column">
+            <div class="callout">
+              <h3>规则：日期 + 膜体系 + 当日顺序号</h3>
+              <p><strong style="color:var(--mint)">20260724-CEM-02</strong></p>
+            </div>
+            <div class="fact"><span class="fact-index">1</span><div><strong>先选 CEM / AEM</strong><p>系统按当天已有批次自动计算下一个编号。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>填写配方编号和版本</strong><p>SOP、目标粘度等低频项放在“高级参数”。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>创建后直接进入第一步</strong><p>同一个批次号继续用于运行记录、标签和批记录。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>建批时不需要手工编批次号</span><span>04</span></footer>
+      </section>
+
+      <section class="slide" data-title="15 个步骤按顺序推进" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">实验流程</div>
+            <h2>15 个步骤按顺序推进</h2>
+          </div>
+          <div class="slide-no">05 / 22</div>
+        </header>
+        <div class="slide-body split text-first">
+          <div class="note-column">
+            <ol class="step-list" aria-label="R-201 实验步骤">
+              <li><b>01</b>环境与设备确认</li>
+              <li><b>02</b>器皿干燥确认</li>
+              <li><b>03</b>物料确认</li>
+              <li><b>04</b>酸水配制</li>
+              <li><b>10</b>TEOS / 功能硅烷预混</li>
+              <li><b>20</b>加入乙醇搅拌</li>
+              <li><b>30</b>冰浴与注射泵准备</li>
+              <li><b>31</b>注射泵加酸水</li>
+              <li><b>32</b>加完后平衡</li>
+              <li><b>40</b>冷凝回流与升温</li>
+              <li><b>50</b>40℃恒温陈化</li>
+              <li><b>60</b>停止加热并降温</li>
+              <li><b>70</b>过滤、出料与转序</li>
+              <li><b>80</b>完成实验并锁定</li>
+              <li><b>90</b>实验记录已完成</li>
+            </ol>
+            <p>编号按工艺阶段留有间隔，后续可在 10、20、30 等阶段之间插入步骤，不需要整体改号。</p>
+          </div>
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">步骤 11 / 15</span>
+            <img src="assets/screenshots/16-aging-step.jpg" alt="实验执行页顶部的 15 步进度条">
+          </figure>
+        </div>
+        <footer class="footer"><span>界面显示顺序号；内部保留 R201-01、R201-10 等受控代码</span><span>05</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 1：环境与设备确认" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 01</div>
+            <h2>环境与设备确认</h2>
+          </div>
+          <div class="slide-no">06 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot contain" data-zoom>
+            <span class="shot-tag neutral">设备离线时的界面</span>
+            <img src="assets/screenshots/08-step-environment-device-check.jpg" alt="环境与设备确认步骤">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>优先读取 WHD46</strong><p>在线时自动带入环境温度、湿度和设备时间。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>显示当前设备状态</strong><p>哪些设备在线、哪些设备离线，在开始实验前直接看清。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>离线才开放人工补录</strong><p>人工值会明确标注来源，不会和设备自动值混在一起。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>自动采集优先，人工输入作为兜底</span><span>06</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 2–3：器皿与物料确认" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 02–03</div>
+            <h2>器皿与物料确认</h2>
+          </div>
+          <div class="slide-no">07 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot contain" data-zoom>
+            <span class="shot-tag neutral">物料确认页</span>
+            <img src="assets/screenshots/07-step-material-confirmation.jpg" alt="物料确认步骤的预设物料行">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>器皿改为勾选确认</strong><p>不要求操作员输入一串器皿名，减少现场打字。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>物料按配方预先列出</strong><p>操作员只补实际量；批号可选填，也可接扫码枪。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>缺少必需信息会当场提示</strong><p>提示使用中文字段名，不再显示 “Actual value is required”。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>目标是确认，不是把纸质表格重新打一遍</span><span>07</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 4、10、20：配液与预混" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 04 / 10 / 20</div>
+            <h2>酸水配制、预混、加入乙醇</h2>
+          </div>
+          <div class="slide-no">08 / 22</div>
+        </header>
+        <div class="slide-body split text-first">
+          <div class="note-column">
+            <div class="mini-flow">
+              <div><b>开始预混</b><span>点击后记录开始时间。</span></div>
+              <div><b>设备连续采集</b><span>HMS-C 上传温度与转速。</span></div>
+              <div><b>加入乙醇</b><span>再次点击，形成新的时间段。</span></div>
+              <div><b>结束确认</b><span>系统写入时间线和步骤结果。</span></div>
+            </div>
+            <div class="callout">
+              <h3>“体系外观”是什么</h3>
+              <p>用于记录溶胶是否澄清、浑浊、分层或出现沉淀。这类信息设备无法直接判断，保留为短选项或异常时填写。</p>
+            </div>
+          </div>
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">操作与数据时间线</span>
+            <img src="assets/screenshots/16-aging-step.jpg" alt="实验步骤事件依次写入时间线">
+          </figure>
+        </div>
+        <footer class="footer"><span>HMS-C 数值自动取，肉眼外观只做简短确认</span><span>08</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 30–32：冰浴与加酸" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 30–32</div>
+            <h2>冰浴、注射泵加酸、平衡</h2>
+          </div>
+          <div class="slide-no">09 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/11-online-pump-detail.jpg" alt="注射泵在线详情和三次运行记录">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>开始加酸时打标</strong><p>锁定开始时间和注射泵累计量 A。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>结束加酸时再打标</strong><p>锁定结束累计量 B，自动计算本次加入量 B − A。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>平衡时间由时间戳计算</strong><p>系统判断是否达到规定时长；超范围时立即提示。</p></div></div>
+            <div class="metric-list">
+              <div class="metric-item"><span>设备值</span><b>0.50 mL/min</b></div>
+              <div class="metric-item"><span>设备值</span><b>123.60 mL</b></div>
+            </div>
+          </div>
+        </div>
+        <footer class="footer"><span>加入量不是手抄，是两个设备累计值的差</span><span>09</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 40–50：升温与恒温陈化" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 40–50</div>
+            <h2>升温、到达 40℃、恒温陈化</h2>
+          </div>
+          <div class="slide-no">10 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/16-aging-step.jpg" alt="40摄氏度恒温陈化和粘度趋势">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>记录升温开始点</strong><p>后续温度曲线按批次保存，不只保留一个温度值。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>到达 40℃ 再开始反应计时</strong><p>开始时刻来自人工确认，温度来自 HMS-C。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>粘度可重复测量</strong><p>每次点击从粘度计锁定读数，系统判断是否连续两次进入目标范围。</p></div></div>
+            <div class="callout"><p>截图中两次粘度读数均标记为“设备自动”，终点条件已经满足。</p></div>
+          </div>
+        </div>
+        <footer class="footer"><span>反应时间靠人工打标；连续曲线靠设备采集</span><span>10</span></footer>
+      </section>
+
+      <section class="slide" data-title="步骤 60–90：降温、出料与锁定" data-section="流程">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">步骤 60–90</div>
+            <h2>降温、过滤出料、锁定记录</h2>
+          </div>
+          <div class="slide-no">11 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag neutral">已完成批次</span>
+            <img src="assets/screenshots/20-released-experiment.jpg" alt="实验记录已完成的批次页面">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>降温</strong><p>记录停止加热与到室温的时间，系统计算降温时长。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>过滤、出料与转序</strong><p>保留过滤规格、容器重量、转序粘度和标签确认。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>锁定前检查</strong><p>只检查未处置异常和必需结果；问题在发生步骤就已经提示。</p></div></div>
+            <div class="fact"><span class="fact-index">4</span><div><strong>完成后导出批记录</strong><p>步骤结果、设备来源、趋势和审计时间线进入同一份 PDF。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>锁定表示本批实验记录不再随意修改</span><span>11</span></footer>
+      </section>
+
+      <section class="slide" data-title="设备看板：每类设备显示自己的指标" data-section="设备">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">设备 · 总览</div>
+            <h2>每类设备显示自己的指标</h2>
+          </div>
+          <div class="slide-no">12 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/10-online-device-dashboard.jpg" alt="不同设备显示不同专属指标的设备看板">
+          </figure>
+          <div class="note-column">
+            <div class="metric-list">
+              <div class="metric-item"><span>HMS-C</span><b>温度 / 转速 / 设定值</b></div>
+              <div class="metric-item"><span>TYD02</span><b>速率 / 累计量 / 目标量</b></div>
+              <div class="metric-item"><span>粘度计</span><b>粘度 / 扭矩 / 温度 / 剪切</b></div>
+              <div class="metric-item"><span>WHD46</span><b>三路温度 / 三路湿度</b></div>
+            </div>
+            <div class="callout">
+              <h3>在线 / 离线一眼可见</h3>
+              <p>当前部署没有接实物设备时会显示“离线”；接线和通讯参数正确后转为“运行中”。</p>
+            </div>
+          </div>
+        </div>
+        <footer class="footer"><span>同一块看板展示 1 台泵、1 台粘度计、5 台搅拌器和 1 台温湿度控制器</span><span>12</span></footer>
+      </section>
+
+      <section class="slide" data-title="HMS-C：5 台搅拌器独立显示" data-section="设备">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">设备 · HMS-C</div>
+            <h2>5 台搅拌器独立显示</h2>
+          </div>
+          <div class="slide-no">13 / 22</div>
+        </header>
+        <div class="slide-body split equal">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">实验内设备列表</span>
+            <img src="assets/screenshots/17-live-devices-in-experiment.jpg" alt="五台HMS-C搅拌器在实验页面内分别显示">
+          </figure>
+          <div class="note-column">
+            <figure class="shot" style="min-height:42%" data-zoom>
+              <span class="shot-tag">单台详情</span>
+              <img src="assets/screenshots/12-online-stirrer-detail.jpg" alt="HMS-C搅拌器详情">
+            </figure>
+            <div class="fact"><span class="fact-index">1</span><div><strong>每台有独立设备 ID</strong><p>温度、转速、设定值和在线状态不会互相覆盖。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>每批只绑定一次现场设备</strong><p>系统检测到 5 台时，操作员只需选择本批实际使用的那一台。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>页面恢复为 5 台搅拌器；实验批次明确绑定其中一台</span><span>13</span></footer>
+      </section>
+
+      <section class="slide" data-title="TYD02：自动记录加酸过程" data-section="设备">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">设备 · TYD02</div>
+            <h2>自动记录加酸过程</h2>
+          </div>
+          <div class="slide-no">14 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/11-online-pump-detail.jpg" alt="TYD02注射泵在线详情">
+          </figure>
+          <div class="note-column">
+            <div class="metric-list">
+              <div class="metric-item"><span>实时</span><b>注入速率</b></div>
+              <div class="metric-item"><span>实时</span><b>累计加入量</b></div>
+              <div class="metric-item"><span>设定</span><b>目标液量</b></div>
+              <div class="metric-item"><span>设定</span><b>注射器规格</b></div>
+            </div>
+            <div class="fact"><span class="fact-index">1</span><div><strong>每次运行单独成档</strong><p>开始、结束、持续时间、完成状态和实际液量都有记录。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>可回到原始运行</strong><p>批次结果可追溯到对应运行曲线与设备事件。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>当前系统对设备只读，不从电脑反向控制泵</span><span>14</span></footer>
+      </section>
+
+      <section class="slide" data-title="粘度计：连续测量直到终点" data-section="设备">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">设备 · 粘度计</div>
+            <h2>连续测量直到达到终点</h2>
+          </div>
+          <div class="slide-no">15 / 22</div>
+        </header>
+        <div class="slide-body split equal">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">设备详情</span>
+            <img src="assets/screenshots/13-online-viscometer-detail.jpg" alt="粘度计粘度、温度、扭矩和剪切速率">
+          </figure>
+          <div class="note-column">
+            <figure class="shot" style="min-height:46%" data-zoom>
+              <span class="shot-tag">批次内粘度趋势</span>
+              <img src="assets/screenshots/16-aging-step.jpg" alt="批次中的两次粘度设备自动读数">
+            </figure>
+            <div class="fact"><span class="fact-index">1</span><div><strong>一次点击锁定一组读数</strong><p>粘度、扭矩、样品温度、转子和转速一并保存。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>自动判断终点</strong><p>连续两次进入目标范围且差值 ≤ 0.5 mPa·s，才允许进入降温。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>设备在线时不要求实验员逐项手填</span><span>15</span></footer>
+      </section>
+
+      <section class="slide" data-title="WHD46：三路温湿度采集" data-section="设备">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">设备 · WHD46</div>
+            <h2>三路温湿度采集</h2>
+          </div>
+          <div class="slide-no">16 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">隔离演示数据</span>
+            <img src="assets/screenshots/14-online-environment-detail.jpg" alt="WHD46三通道温湿度页面和历史曲线">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>独立设备模块</strong><p>WHD46 已和泵、搅拌器、粘度计一样，拥有独立采集与页面模块。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>三路同时显示</strong><p>CH1、CH2、CH3 各自记录温度和湿度，并提供平均值。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>历史趋势与 CSV</strong><p>支持温度/湿度曲线切换和单设备数据导出。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>步骤 01 的环境值优先从这里自动带入</span><span>16</span></footer>
+      </section>
+
+      <section class="slide" data-title="点击打标后，系统从设备数据中取值" data-section="数据">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">数据 · 打标</div>
+            <h2>点击打标后，系统从设备数据中取值</h2>
+          </div>
+          <div class="slide-no">17 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">来源：设备自动</span>
+            <img src="assets/screenshots/16-aging-step.jpg" alt="粘度测量和操作数据时间线">
+          </figure>
+          <div class="note-column">
+            <div class="mini-flow">
+              <div><b>设备连续上传</b><span>后台保存原始时间序列。</span></div>
+              <div><b>操作员点击</b><span>写入步骤开始或结束时间。</span></div>
+              <div><b>系统截取</b><span>按时间点取设备值或计算区间结果。</span></div>
+              <div><b>保存来源</b><span>记录设备、指标、样本与公式。</span></div>
+            </div>
+            <div class="callout">
+              <h3>人工输入不是默认路线</h3>
+              <p>在线设备优先；设备离线或读数过期时，系统才展开人工补录，并保留“人工补录”来源。</p>
+            </div>
+          </div>
+        </div>
+        <footer class="footer"><span>时间戳把人工操作与设备数据对齐</span><span>17</span></footer>
+      </section>
+
+      <section class="slide" data-title="运行记录、曲线与导出" data-section="数据">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">数据 · 运行记录</div>
+            <h2>运行记录、曲线与导出</h2>
+          </div>
+          <div class="slide-no">18 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">单次注射泵运行</span>
+            <img src="assets/screenshots/15-run-detail.jpg" alt="单次设备运行详情和流速曲线">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>单次运行详情</strong><p>设备、开始/结束、时长、状态、操作员、项目和实际液量。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>曲线与事件</strong><p>运行过程中的流速样本和开始、结束、报警事件按时间展示。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>导出</strong><p>运行列表支持 CSV、Excel；单次运行和实验批次支持 PDF。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>设备运行记录可单独查，也可关联到实验批次</span><span>18</span></footer>
+      </section>
+
+      <section class="slide" data-title="异常当场处理，原始数据不修改" data-section="质量">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">质量 · 异常</div>
+            <h2>异常当场处理，原始数据不修改</h2>
+          </div>
+          <div class="slide-no">19 / 22</div>
+        </header>
+        <div class="slide-body split equal">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag">已处置异常</span>
+            <img src="assets/screenshots/16-aging-step.jpg" alt="实验页面右侧已处置异常卡片">
+          </figure>
+          <div class="note-column">
+            <figure class="shot" style="min-height:42%" data-zoom>
+              <span class="shot-tag neutral">实机未接时</span>
+              <img src="assets/screenshots/01-device-dashboard.jpg" alt="设备离线状态">
+            </figure>
+            <div class="fact"><span class="fact-index">1</span><div><strong>超范围立即提示</strong><p>先确认数据是否正确，再决定继续、返工或终止。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>通讯中断可记录处置</strong><p>保留异常描述、措施、影响评估和处理人；原始数据不回写。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>未处置异常才阻止锁定</strong><p>不会到第 80 步才突然发现前面有普通填写错误。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>离线、过期、超范围和人工补录都有明确状态</span><span>19</span></footer>
+      </section>
+
+      <section class="slide" data-title="从批次到中间品、成品的实物追溯" data-section="追溯">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">实物追溯</div>
+            <h2>批次、中间品、成品和存储位置</h2>
+          </div>
+          <div class="slide-no">20 / 22</div>
+        </header>
+        <div class="slide-body split equal">
+          <figure class="shot" data-zoom>
+            <span class="shot-tag">批次内追溯面板</span>
+            <img src="assets/screenshots/18-traceability-panel.jpg" alt="中间品、存储位置、取回和补打标签">
+          </figure>
+          <div class="note-column">
+            <figure class="shot contain" style="min-height:44%" data-zoom>
+              <span class="shot-tag neutral">标签打印页</span>
+              <img src="assets/screenshots/18-label-print-sheet.jpg" alt="批次与中间品标签打印页">
+            </figure>
+            <div class="fact"><span class="fact-index">1</span><div><strong>自动编号</strong><p>例如 20260724-CEM-01-IP50-01，能看出批次、生成步骤和容器序号。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>存入 / 取回都扫码</strong><p>记录冰箱位置、保存条件、最晚使用时间和操作人。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>标签可补打</strong><p>字迹不再依赖马克笔；补打原因和次数留痕。</p></div></div>
+          </div>
+        </div>
+        <footer class="footer"><span>第一期已实现标签生成与浏览器打印；打印机驱动需现场联调</span><span>20</span></footer>
+      </section>
+
+      <section class="slide" data-title="自动生成电子批记录" data-section="记录">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">记录 · PDF</div>
+            <h2>自动生成电子批记录</h2>
+          </div>
+          <div class="slide-no">21 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot contain" data-zoom>
+            <span class="shot-tag neutral">系统导出的第 1 页</span>
+            <img src="assets/screenshots/21-experiment-batch-record.jpg" alt="R-201湿化学合成电子批记录">
+          </figure>
+          <div class="note-column">
+            <div class="fact"><span class="fact-index">1</span><div><strong>批次基本信息</strong><p>配方、SOP、目标粘度、操作员、路线与最终判定。</p></div></div>
+            <div class="fact"><span class="fact-index">2</span><div><strong>15 步执行结果</strong><p>每一步的开始、结束、结果和数据来源进入同一份记录。</p></div></div>
+            <div class="fact"><span class="fact-index">3</span><div><strong>趋势与审计链</strong><p>温度、粘度、异常、设备绑定和时间线继续排在后续页。</p></div></div>
+            <div class="callout warning"><p>当前仍处于纸电并行验证阶段，正式放行以受控纸质签名流程为准。</p></div>
+          </div>
+        </div>
+        <footer class="footer"><span>截图中的 PDF 由当前系统直接生成</span><span>21</span></footer>
+      </section>
+
+      <section class="slide" data-title="当前边界与接下来要做的事" data-section="收尾">
+        <header class="slide-head">
+          <div>
+            <div class="section-label">当前状态</div>
+            <h2>当前边界与接下来要做的事</h2>
+          </div>
+          <div class="slide-no">22 / 22</div>
+        </header>
+        <div class="slide-body split">
+          <figure class="shot position-left" data-zoom>
+            <span class="shot-tag neutral">实物未接入时</span>
+            <img src="assets/screenshots/01-device-dashboard.jpg" alt="设备未接入时全部显示离线">
+          </figure>
+          <div class="note-column">
+            <table class="status-table" aria-label="当前边界和下一步">
+              <thead><tr><th>事项</th><th>当前情况</th><th>下一步</th></tr></thead>
+              <tbody>
+                <tr><td>设备通讯</td><td>代码与页面已就位</td><td>现场核对接口、电平、线序、波特率、校验位和地址</td></tr>
+                <tr><td>设备控制</td><td>当前只读采集</td><td>先稳定采集与追溯，再评估是否需要反向控制</td></tr>
+                <tr><td>5 台搅拌器</td><td>软件已按 5 台显示</td><td>确认每台独立端口，或增加一条总线多从机支持</td></tr>
+                <tr><td>标签打印</td><td>标签与二维码已生成</td><td>选择标签机、纸张规格并做现场打印测试</td></tr>
+                <tr><td>纸电并行</td><td>电子记录用于验证</td><td>跑真实批次，对照纸表核验数据完整性</td></tr>
+              </tbody>
+            </table>
+            <div class="callout">
+              <h3>周会上建议直接演示 5 个动作</h3>
+              <p>登录 → 创建批次 → 打开设备看板 → 进入第 50 步查看设备自动粘度 → 打开中间品标签与电子批记录。</p>
+            </div>
+          </div>
+        </div>
+        <footer class="footer"><span>下一阶段重点是现场接线与真实批次验证，不再继续增加手工输入项</span><span>22</span></footer>
+      </section>
+    </main>
+  </div>
+
+  <div id="toc" class="toc" aria-hidden="true">
+    <div class="toc-backdrop" data-close-toc></div>
+    <section class="toc-panel" aria-label="演示目录">
+      <div class="toc-head">
+        <h2>演示目录</h2>
+        <button class="icon-button" type="button" data-close-toc aria-label="关闭目录">×</button>
+      </div>
+      <div id="tocList" class="toc-list"></div>
+    </section>
+  </div>
+
+  <div id="lightbox" class="lightbox" aria-hidden="true">
+    <button class="icon-button" type="button" aria-label="关闭大图">×</button>
+    <img id="lightboxImage" alt="">
+  </div>
+
+  <div class="progress" aria-hidden="true"><div id="progressValue" class="progress-value"></div></div>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll(".slide")];
+      const dots = document.getElementById("railDots");
+      const toc = document.getElementById("toc");
+      const tocList = document.getElementById("tocList");
+      const progress = document.getElementById("progressValue");
+      const lightbox = document.getElementById("lightbox");
+      const lightboxImage = document.getElementById("lightboxImage");
+      let index = 0;
+      let touchStartX = 0;
+      let touchStartY = 0;
+
+      const pad = value => String(value).padStart(2, "0");
+
+      slides.forEach((slide, slideIndex) => {
+        const dot = document.createElement("button");
+        dot.className = "rail-dot";
+        dot.type = "button";
+        dot.title = `${pad(slideIndex + 1)} · ${slide.dataset.title}`;
+        dot.setAttribute("aria-label", dot.title);
+        dot.addEventListener("click", () => show(slideIndex));
+        dots.appendChild(dot);
+
+        const item = document.createElement("button");
+        item.className = "toc-item";
+        item.type = "button";
+        item.innerHTML = `<b>${pad(slideIndex + 1)}</b><span></span>`;
+        item.querySelector("span").textContent = slide.dataset.title;
+        item.addEventListener("click", () => {
+          show(slideIndex);
+          closeToc();
+        });
+        tocList.appendChild(item);
+      });
+
+      const dotItems = [...dots.children];
+      const tocItems = [...tocList.children];
+
+      function show(nextIndex, updateHash = true) {
+        const next = Math.max(0, Math.min(slides.length - 1, nextIndex));
+        if (next === index && slides[next].classList.contains("is-active")) {
+          update();
+          return;
+        }
+        slides.forEach((slide, slideIndex) => {
+          slide.classList.toggle("is-active", slideIndex === next);
+          slide.classList.toggle("was-active", slideIndex < next);
+        });
+        index = next;
+        update();
+        if (updateHash) {
+          history.replaceState(null, "", `#slide-${pad(index + 1)}`);
+        }
+      }
+
+      function update() {
+        dotItems.forEach((dot, dotIndex) => dot.classList.toggle("is-active", dotIndex === index));
+        tocItems.forEach((item, itemIndex) => item.classList.toggle("is-active", itemIndex === index));
+        progress.style.width = `${((index + 1) / slides.length) * 100}%`;
+        document.title = `${pad(index + 1)} · ${slides[index].dataset.title} · 陶瓷膜实验管理系统`;
+      }
+
+      function openToc() {
+        toc.classList.add("is-open");
+        toc.setAttribute("aria-hidden", "false");
+        tocItems[index]?.scrollIntoView({block: "nearest"});
+      }
+
+      function closeToc() {
+        toc.classList.remove("is-open");
+        toc.setAttribute("aria-hidden", "true");
+      }
+
+      function openLightbox(figure) {
+        const image = figure.querySelector("img");
+        if (!image) return;
+        lightboxImage.src = image.currentSrc || image.src;
+        lightboxImage.alt = image.alt;
+        lightbox.classList.add("is-open");
+        lightbox.setAttribute("aria-hidden", "false");
+      }
+
+      function closeLightbox() {
+        lightbox.classList.remove("is-open");
+        lightbox.setAttribute("aria-hidden", "true");
+        lightboxImage.removeAttribute("src");
+      }
+
+      document.getElementById("tocButton").addEventListener("click", openToc);
+      document.querySelectorAll("[data-close-toc]").forEach(node => node.addEventListener("click", closeToc));
+      document.querySelectorAll("[data-zoom]").forEach(node => node.addEventListener("click", () => openLightbox(node)));
+      lightbox.addEventListener("click", event => {
+        if (event.target === lightbox || event.target.closest("button")) closeLightbox();
+      });
+
+      document.getElementById("fullscreenButton").addEventListener("click", async () => {
+        try {
+          if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+          else await document.exitFullscreen();
+        } catch (_) {}
+      });
+
+      window.addEventListener("keydown", event => {
+        if (lightbox.classList.contains("is-open")) {
+          if (event.key === "Escape") closeLightbox();
+          return;
+        }
+        if (toc.classList.contains("is-open")) {
+          if (event.key === "Escape" || event.key.toLowerCase() === "g") closeToc();
+          return;
+        }
+        if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+          event.preventDefault();
+          show(index + 1);
+        } else if (["ArrowLeft", "PageUp"].includes(event.key)) {
+          event.preventDefault();
+          show(index - 1);
+        } else if (event.key === "Home") {
+          show(0);
+        } else if (event.key === "End") {
+          show(slides.length - 1);
+        } else if (event.key.toLowerCase() === "g") {
+          openToc();
+        } else if (event.key.toLowerCase() === "f") {
+          document.getElementById("fullscreenButton").click();
+        }
+      });
+
+      window.addEventListener("touchstart", event => {
+        const touch = event.changedTouches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+      }, {passive: true});
+
+      window.addEventListener("touchend", event => {
+        const touch = event.changedTouches[0];
+        const dx = touch.clientX - touchStartX;
+        const dy = touch.clientY - touchStartY;
+        if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+          show(index + (dx < 0 ? 1 : -1));
+        }
+      }, {passive: true});
+
+      window.addEventListener("hashchange", () => {
+        const match = location.hash.match(/slide-(\d+)/);
+        if (match) show(Number(match[1]) - 1, false);
+      });
+
+      const hashMatch = location.hash.match(/slide-(\d+)/);
+      if (hashMatch) index = Math.max(0, Math.min(slides.length - 1, Number(hashMatch[1]) - 1));
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle("is-active", slideIndex === index);
+        slide.classList.toggle("was-active", slideIndex < index);
+      });
+      update();
+    })();
+  </script>
+</body>
+</html>

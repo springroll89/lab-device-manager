@@ -16,6 +16,9 @@ def _item(row) -> Optional[dict]:
         return None
     result = dict(row)
     result["hazards"] = json.loads(result.pop("hazards_json") or "[]")
+    result["controlled_categories"] = json.loads(
+        result.pop("controlled_categories_json") or "[]"
+    )
     result["is_controlled"] = bool(result["is_controlled"])
     if (
         result["status"] == "available"
@@ -90,7 +93,10 @@ class InventoryStore:
             str(data.get("container_code") or "").strip().upper()
             or self._next_code(conn)
         )
-        quantity = float(data.get("quantity_remaining") or 0)
+        raw_quantity = data.get("quantity_remaining")
+        quantity = (
+            None if raw_quantity is None else float(raw_quantity)
+        )
         cursor = conn.execute(
             """INSERT INTO material_container(
                  container_code, external_barcode, material_name,
@@ -100,8 +106,9 @@ class InventoryStore:
                  created_by_user_id, category, location, owner,
                  min_threshold, max_threshold, is_controlled, note,
                  cas_no, spec, hazards_json, sds_url, prepared_by,
-                 prepared_date, imported_source, imported_id)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 prepared_date, imported_source, imported_id,
+                 hazardous_status, controlled_categories_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 code,
                 data.get("external_barcode"),
@@ -133,10 +140,14 @@ class InventoryStore:
                 data.get("prepared_date"),
                 data.get("imported_source"),
                 data.get("imported_id"),
+                data.get("hazardous_status", "not_assessed"),
+                _json(data.get("controlled_categories") or []),
             ),
         )
         initial_action = data.get("initial_action", "registered")
-        initial_delta = data.get("initial_delta", quantity)
+        initial_delta = data.get(
+            "initial_delta", 0 if quantity is None else quantity
+        )
         conn.execute(
             """INSERT INTO inventory_movement(
                  client_event_id, item_id, action, delta,
@@ -324,6 +335,8 @@ class InventoryStore:
             "sds_url",
             "prepared_by",
             "prepared_date",
+            "hazardous_status",
+            "controlled_categories_json",
         }
         values = {
             key: value for key, value in updates.items() if key in allowed
@@ -582,14 +595,16 @@ class InventoryStore:
         low_stock_items = [
             item
             for item in items
-            if item["quantity_remaining"] > 0
+            if item["quantity_remaining"] is not None
+            and item["quantity_remaining"] > 0
             and item["min_threshold"] is not None
             and item["quantity_remaining"] <= item["min_threshold"]
         ]
         over_stock_items = [
             item
             for item in items
-            if item["max_threshold"] is not None
+            if item["quantity_remaining"] is not None
+            and item["max_threshold"] is not None
             and item["quantity_remaining"] >= item["max_threshold"]
         ]
         expiring_items = [
@@ -612,13 +627,32 @@ class InventoryStore:
         used_up_items = [
             item
             for item in items
-            if item["status"] == "empty" or item["quantity_remaining"] <= 0
+            if item["status"] == "empty"
+            or (
+                item["quantity_remaining"] is not None
+                and item["quantity_remaining"] <= 0
+            )
         ]
         controlled_items = [item for item in items if item["is_controlled"]]
+        hazardous_items = [
+            item for item in items
+            if item["hazardous_status"] == "listed"
+        ]
         hazard_counts = {}
+        hazardous_status_counts = {}
+        control_category_counts = {}
         for item in items:
             if item["category"] != "chemical":
                 continue
+            hazardous_status = item["hazardous_status"]
+            hazardous_status_counts[hazardous_status] = (
+                hazardous_status_counts.get(hazardous_status, 0) + 1
+            )
+            for category in item["controlled_categories"]:
+                if category:
+                    control_category_counts[category] = (
+                        control_category_counts.get(category, 0) + 1
+                    )
             for hazard in item["hazards"]:
                 if hazard:
                     hazard_counts[hazard] = hazard_counts.get(hazard, 0) + 1
@@ -645,6 +679,7 @@ class InventoryStore:
             "to_dispose": len(to_dispose_items),
             "used_up": len(used_up_items),
             "controlled": len(controlled_items),
+            "hazardous": len(hazardous_items),
             "low_stock_items": low_stock_items,
             "over_stock_items": over_stock_items,
             "expiring_items": expiring_items,
@@ -653,6 +688,8 @@ class InventoryStore:
             "used_up_items": used_up_items,
             "controlled_items": controlled_items,
             "hazard_counts": hazard_counts,
+            "hazardous_status_counts": hazardous_status_counts,
+            "control_category_counts": control_category_counts,
             "last_adjust_at_ms": last_adjust_at_ms,
             "days_since_last_adjust": days_since_last_adjust,
         }

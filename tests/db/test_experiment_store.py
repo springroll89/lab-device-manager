@@ -37,6 +37,15 @@ def test_repository_enables_foreign_keys_and_applies_r201_migration():
     assert "007_parallel_traceability" in versions
     assert "008_inventory_module" in versions
     assert "009_inventory_ledger_backfill" in versions
+    assert "010_inventory_compliance_fields" in versions
+    inventory_columns = {
+        row[1]
+        for row in repo._conn.execute(
+            "PRAGMA table_info(material_container)"
+        ).fetchall()
+    }
+    assert "hazardous_status" in inventory_columns
+    assert "controlled_categories_json" in inventory_columns
 
 
 def test_viscometer_lease_is_exclusive_and_reusable_after_release():
@@ -116,6 +125,88 @@ def test_experiment_store_creates_and_lists_experiment():
     trace_items = repo.experiments.list_trace_items(created["id"])
     assert len(trace_items) == 1
     assert trace_items[0]["item_code"] == created["batch_id"]
+
+
+def test_delete_experiment_removes_related_data_and_releases_device():
+    repo = Repository(":memory:")
+    payload = {
+        **_experiment_payload(),
+        "recipe_parameters": [
+            {
+                "parameter_code": "TEOS_TARGET",
+                "display_name": "TEOS 理论量",
+                "target_value": 10,
+                "unit": "mL",
+                "source": "recipe",
+            }
+        ],
+    }
+    created = repo.experiments.create_experiment(payload, now_ms=1000)
+    device_id = repo.upsert_device(
+        "stirrer-delete", "stirrer", "删除测试搅拌器"
+    )
+    repo.experiments.reserve_process_device(
+        created["id"], device_id, "stirrer", "张三", None, 1100
+    )
+
+    deleted = repo.experiments.delete_experiment(created["id"])
+
+    assert deleted["batch_id"] == created["batch_id"]
+    assert repo.experiments.get_experiment(created["id"]) is None
+    assert repo.experiments.list_device_reservations() == []
+    for table in (
+        "device_reservation",
+        "recipe_parameter",
+        "trace_event",
+        "trace_item",
+    ):
+        assert repo._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE experiment_id=?",
+            (created["id"],),
+        ).fetchone()[0] == 0
+
+    replacement = repo.experiments.create_experiment(
+        _experiment_payload("20260723-CEM-02"), now_ms=1200
+    )
+    reservation = repo.experiments.reserve_process_device(
+        replacement["id"], device_id, "stirrer", "李四", None, 1300
+    )
+    assert reservation["experiment_id"] == replacement["id"]
+
+
+def test_delete_experiment_refuses_to_hide_inventory_ledger_history():
+    repo = Repository(":memory:")
+    created = repo.experiments.create_experiment(
+        _experiment_payload(), now_ms=1000
+    )
+    item = repo.inventory.create_item(
+        {
+            "client_event_id": "inventory-register-delete-guard",
+            "container_code": "PC-DELETE-GUARD",
+            "material_name": "删除保护原料",
+            "quantity_remaining": 10,
+            "unit": "mL",
+            "created_at_ms": 1000,
+            "created_by": "张三",
+        }
+    )
+    repo.inventory.record_movement(
+        item["id"],
+        {
+            "client_event_id": "inventory-use-delete-guard",
+            "experiment_id": created["id"],
+            "action": "experiment_used",
+            "quantity": 1,
+            "unit": "mL",
+            "effective_at_ms": 1100,
+            "actor": "张三",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="库存流水"):
+        repo.experiments.delete_experiment(created["id"])
+
+    assert repo.experiments.get_experiment(created["id"]) is not None
 
 
 def test_experiment_batch_id_is_unique():

@@ -71,7 +71,7 @@ function dashboardMetrics(dev, latest, metrics) {
 
 function buildDeviceCard(dev, latest, metrics) {
   const card = document.createElement("div");
-  card.className = `card${dev.type === "whd46" ? " sensor-card" : ""}`;
+  card.className = "card";
   card.dataset.deviceId = dev.id;
   card.onclick = () => {
     location.href = dev.type === "whd46" ? `/sensor/${dev.id}` : `/device/${dev.id}`;
