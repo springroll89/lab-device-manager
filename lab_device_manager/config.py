@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import pathlib
 import secrets
 import tomllib
@@ -15,10 +16,12 @@ def _load_or_create_secret(path: str = "./data/.session_secret") -> str:
     """
     p = pathlib.Path(path)
     if p.exists():
+        os.chmod(p, 0o600)
         return p.read_text().strip()
     s = secrets.token_urlsafe(32)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(s)
+    os.chmod(p, 0o600)
     return s
 
 
@@ -42,6 +45,9 @@ def load_config(path: str | None = None) -> Config:
         path = str(local_path if local_path.exists() else "config.toml")
     with open(path, "rb") as f:
         d = tomllib.load(f)
+    sample_interval_ms = d.get("sample_interval_ms", 1000)
+    if not isinstance(sample_interval_ms, int) or sample_interval_ms <= 0:
+        raise ValueError("config: sample_interval_ms must be a positive integer")
     if "devices" in d and not isinstance(d["devices"], list):
         raise ValueError("config: use [[devices]] (array of tables), not [devices]")
     devs = tuple(DeviceConfig(
@@ -93,7 +99,7 @@ def load_config(path: str | None = None) -> Config:
             )
     return Config(
         db_path=d.get("db_path", "./data/lab_device_manager.db"),
-        sample_interval_ms=d.get("sample_interval_ms", 1000),
+        sample_interval_ms=sample_interval_ms,
         web_port=d.get("web_port", 7800),
         web_host=d.get("web_host", "0.0.0.0"),
         public_base_url=public_base_url,

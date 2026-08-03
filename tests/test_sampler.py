@@ -3,6 +3,15 @@ from lab_device_manager.sampler import Sampler
 from lab_device_manager.instruments.base import StatusSnapshot
 
 
+def _wait_until(predicate, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 class FakeAdapter:
     def __init__(self, seq):
         self.seq = list(seq)
@@ -26,7 +35,7 @@ def test_sampler_emits_samples():
     out = []
     s = Sampler(adapter, interval_s=0.02, on_sample=out.append)
     s.start()
-    time.sleep(0.12)
+    assert _wait_until(lambda: len(out) >= 2)
     s.stop()
     assert len(out) >= 2
     assert out[0].temp_c in (1.0, 2.0)
@@ -37,7 +46,10 @@ def test_sampler_emits_offline_on_error():
     out = []
     s = Sampler(adapter, interval_s=0.02, on_sample=out.append)
     s.start()
-    time.sleep(0.12)
+    assert _wait_until(
+        lambda: any(x.state == "offline" for x in out)
+        and any(x.temp_c == 7.0 for x in out)
+    )
     s.stop()
     assert any(x.state == "offline" for x in out)
     assert any(x.temp_c == 7.0 for x in out)

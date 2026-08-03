@@ -18,7 +18,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 from lab_device_manager.config import load_config
-from lab_device_manager.modbus_io import SerialTransport
+from lab_device_manager.modbus_io import SerialTransport, TcpTransport
 from lab_device_manager.instruments.viscometer import (
     extract_latest_frame, parse_viscometer_frame, guess_checksum_sum256,
 )
@@ -29,11 +29,18 @@ DURATION = float(sys.argv[2]) if len(sys.argv) > 2 else 30.0
 
 def main():
     cfg = load_config()
-    dev = cfg.devices[0] if cfg.devices else None
-    port = PORT or (dev.serial_port if dev else "")
+    dev = next((item for item in cfg.devices if item.type == "viscometer"), None)
+    if dev is None:
+        raise SystemExit("no viscometer device configured")
+    port = PORT or dev.serial_port
     baud = dev.baudrate if dev else 9600
-    print(f"capturing {port} @ {baud}, 8N1 (NONE parity), for {DURATION}s ...")
-    tr = SerialTransport(port, baud, parity="NONE")   # viscometer: assume 8N1
+    endpoint = port if PORT or dev.transport == "serial" else f"{dev.host}:{dev.tcp_port}"
+    print(f"capturing {endpoint} @ {baud}, 8N1 (NONE parity), for {DURATION}s ...")
+    tr = (
+        TcpTransport(dev.host, dev.tcp_port, dev.connect_timeout_s)
+        if not PORT and dev.transport == "tcp"
+        else SerialTransport(port, baud, parity="NONE")
+    )
     tr.open()
     buf = bytearray()
     n_frames = 0

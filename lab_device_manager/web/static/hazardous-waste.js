@@ -21,6 +21,25 @@ function wasteEventId(prefix) {
   }`;
 }
 
+function stableWasteEventId(form, prefix) {
+  if (!form.dataset.clientEventId) {
+    form.dataset.clientEventId = wasteEventId(prefix);
+  }
+  return form.dataset.clientEventId;
+}
+
+function lockWasteForm(event) {
+  const form = event.currentTarget;
+  if (form.dataset.submitting === "true") return null;
+  form.dataset.submitting = "true";
+  const submitter = event.submitter;
+  if (submitter) submitter.disabled = true;
+  return () => {
+    delete form.dataset.submitting;
+    if (submitter) submitter.disabled = false;
+  };
+}
+
 async function wasteApi(url, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const response = await fetch(url, {
@@ -128,6 +147,7 @@ function renderWasteCharacteristics() {
 }
 
 function resetWasteForm() {
+  delete wasteById("wasteForm").dataset.clientEventId;
   wasteById("wasteForm").reset();
   renderWasteCharacteristics();
   const select = wasteById("wasteLocation");
@@ -143,6 +163,8 @@ function resetWasteForm() {
 
 async function submitWasteForm(event) {
   event.preventDefault();
+  const unlock = lockWasteForm(event);
+  if (!unlock) return;
   try {
     const created = await wasteApi("/api/inventory/hazardous-waste", {
       method:"POST",
@@ -161,14 +183,19 @@ async function submitWasteForm(event) {
         package_type:wasteById("wastePackage").value,
         location_code:wasteById("wasteLocation").value,
         note:wasteById("wasteNote").value || null,
-        client_event_id:wasteEventId("waste-create")
+        client_event_id:stableWasteEventId(
+          event.currentTarget, "waste-create"
+        )
       })
     });
     wasteById("wasteFormDialog").close();
+    delete event.currentTarget.dataset.clientEventId;
     await loadWaste();
     await openWasteDetail(created.id);
   } catch (error) {
     setWasteStatus(error.message, true, "wasteFormStatus");
+  } finally {
+    unlock();
   }
 }
 
@@ -254,6 +281,7 @@ function wasteActionButton(action, label, tone) {
 }
 
 function openWasteAction(action, label) {
+  delete wasteById("wasteActionForm").dataset.clientEventId;
   wasteById("wasteActionForm").reset();
   wasteById("wasteActionId").value = wasteState.selected.id;
   wasteById("wasteActionType").value = action;
@@ -269,12 +297,16 @@ function openWasteAction(action, label) {
 
 async function submitWasteAction(event) {
   event.preventDefault();
+  const unlock = lockWasteForm(event);
+  if (!unlock) return;
   const wasteId = wasteById("wasteActionId").value;
   const action = wasteById("wasteActionType").value;
   let url = `/api/inventory/hazardous-waste/${wasteId}/events`;
   let payload = {
     action,
-    client_event_id:wasteEventId(`waste-${action}`)
+    client_event_id:stableWasteEventId(
+      event.currentTarget, `waste-${action}-${wasteId}`
+    )
   };
   if (action === "add") {
     payload.quantity = Number(wasteById("wasteAddQuantity").value);
@@ -290,7 +322,9 @@ async function submitWasteAction(event) {
       recipient_name:wasteById("recipientName").value,
       recipient_permit_no:wasteById("recipientPermit").value,
       disposal_method:wasteById("disposalMethod").value,
-      client_event_id:wasteEventId("waste-transfer")
+      client_event_id:stableWasteEventId(
+        event.currentTarget, `waste-transfer-${wasteId}`
+      )
     };
   }
   try {
@@ -298,10 +332,13 @@ async function submitWasteAction(event) {
       method:"POST", body:JSON.stringify(payload)
     });
     wasteById("wasteActionDialog").close();
+    delete event.currentTarget.dataset.clientEventId;
     await loadWaste();
     await openWasteDetail(updated.id);
   } catch (error) {
     setWasteStatus(error.message, true, "wasteActionStatus");
+  } finally {
+    unlock();
   }
 }
 

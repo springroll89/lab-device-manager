@@ -195,7 +195,9 @@ async function load() {
   if (!DEVICE_ID || !Number.isFinite(DEVICE_ID)) { return; }
   let data;
   try {
-    data = await (await fetch("/api/devices/" + DEVICE_ID)).json();
+    const response = await fetch("/api/devices/" + DEVICE_ID);
+    data = await response.json();
+    if (!response.ok) throw new Error(data.error || "请求失败");
   } catch (e) { return; }
   const dev = data.device || { id: DEVICE_ID };
   $("title").textContent = dev.alias || dev.name || ("设备 " + DEVICE_ID);
@@ -205,5 +207,9 @@ async function load() {
   renderRuns(data.runs);
 }
 
-load();
-setInterval(load, 2000);
+async function pollDevice() {
+  await load();
+  window.setTimeout(pollDevice, 2000);
+}
+
+pollDevice();

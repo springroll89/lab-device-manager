@@ -1,9 +1,26 @@
 const materialById = id => document.getElementById(id);
+let materialSession = null;
+
+function materialEventId(form) {
+  if (!form.dataset.clientEventId) {
+    const unique = globalThis.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    form.dataset.clientEventId = `material-register-${unique}`;
+  }
+  return form.dataset.clientEventId;
+}
 
 async function materialApi(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
   const response = await fetch(url, {
     ...options,
-    headers:{"Content-Type":"application/json",...(options.headers || {})}
+    headers:{
+      "Content-Type":"application/json",
+      ...(!["GET","HEAD","OPTIONS"].includes(method)
+        ? {"X-CSRF-Token":materialSession?.csrf_token || ""}
+        : {}),
+      ...(options.headers || {})
+    }
   });
   const data = await response.json();
   if (!response.ok) {
@@ -168,6 +185,10 @@ materialById("refreshMaterials").addEventListener(
 );
 materialById("materialForm").addEventListener("submit", async event => {
   event.preventDefault();
+  const form = event.currentTarget;
+  if (form.dataset.submitting === "true") return;
+  form.dataset.submitting = "true";
+  if (event.submitter) event.submitter.disabled = true;
   const quantity = materialById("quantity").value;
   try {
     const created = await materialApi("/api/material-containers", {
@@ -180,7 +201,8 @@ materialById("materialForm").addEventListener("submit", async event => {
         supplier_lot:materialById("supplierLot").value || null,
         expires_on:materialById("expiresOn").value || null,
         quantity_remaining:quantity === "" ? null : Number(quantity),
-        unit:quantity === "" ? null : materialById("unit").value
+        unit:quantity === "" ? null : materialById("unit").value,
+        client_event_id:materialEventId(form)
       })
     });
     setMaterialStatus(`已登记 ${created.container_code}，正在打开打印页。`);
@@ -190,6 +212,7 @@ materialById("materialForm").addEventListener("submit", async event => {
       "noopener"
     );
     event.currentTarget.reset();
+    delete form.dataset.clientEventId;
     materialById("containerCode").value = nextContainerCode();
     await loadMaterials();
   } catch (error) {
@@ -198,11 +221,17 @@ materialById("materialForm").addEventListener("submit", async event => {
     } else {
       setMaterialStatus(error.message, true);
     }
+  } finally {
+    delete form.dataset.submitting;
+    if (event.submitter) event.submitter.disabled = false;
   }
 });
 
 materialById("containerCode").value = nextContainerCode();
-loadMaterials().then(async materials => {
+materialApi("/api/session").then(session => {
+  materialSession = session;
+  return loadMaterials();
+}).then(async materials => {
   const scanned = new URLSearchParams(location.search).get("scan");
   if (!scanned) return;
   const normalized = scanned.split("/scan/").pop().toUpperCase();

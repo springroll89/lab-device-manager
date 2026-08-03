@@ -1028,7 +1028,6 @@ def create_app(
         }
 
     def _experiment_detail(experiment_id: int):
-        _ensure_automatic_sources(experiment_id)
         detail = r201.get_experiment(experiment_id)
         detail.update(_device_surface(detail["data_sources"]))
         return detail
@@ -1084,6 +1083,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments")
+    @auth.csrf_required
     def api_create_experiment():
         try:
             body = dict(request.get_json(silent=True) or {})
@@ -1139,6 +1139,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/trace-items")
+    @auth.csrf_required
     def api_create_trace_items(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -1150,6 +1151,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/trace-items/<int:trace_item_id>/store")
+    @auth.csrf_required
     def api_store_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -1163,6 +1165,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/trace-items/<int:trace_item_id>/retrieve")
+    @auth.csrf_required
     def api_retrieve_trace_item(trace_item_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -1176,6 +1179,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/trace-labels")
+    @auth.csrf_required
     def api_request_trace_labels(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -1283,6 +1287,7 @@ def create_app(
             return _inventory_error(exc)
 
     @app.post("/api/storage-locations/<int:location_id>/print")
+    @auth.csrf_required
     def api_request_location_label(location_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -1954,28 +1959,14 @@ def create_app(
     def api_create_material_container():
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body, "created_by")
-        body = {
-            "code": body.get("container_code"),
-            "external_barcode": body.get("external_barcode"),
-            "name": body.get("material_name"),
-            "category": "chemical",
-            "quantity": body.get("quantity_remaining", 0),
-            "unit": body.get("unit") or "未指定",
-            "supplier": body.get("supplier"),
-            "lot_no": body.get("supplier_lot"),
-            "expiry_date": body.get("expires_on"),
-            "created_by": body.get("created_by"),
-            "created_by_user_id": body.get("created_by_user_id"),
-            "client_event_id": body.get("client_event_id"),
-        }
         if not body.get("client_event_id"):
             body["client_event_id"] = (
-                f"material-register-{body.get('code', '')}"
+                f"material-register-{body.get('container_code', '')}"
             )
         try:
-            return jsonify(inventory.create_item(body)), 201
-        except InventoryError as exc:
-            return _inventory_error(exc)
+            return jsonify(r201.create_material_container(body)), 201
+        except R201Error as exc:
+            return _r201_error(exc)
 
     @app.get("/api/material-containers/<int:container_id>")
     def api_material_container_detail(container_id):
@@ -2070,6 +2061,7 @@ def create_app(
         )
 
     @app.post("/api/measurement-station/claim")
+    @auth.csrf_required
     def api_claim_measurement_station():
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -2091,6 +2083,7 @@ def create_app(
             return _r201_error(R201Error("experiment_id and device_id are required"))
 
     @app.post("/api/measurement-station/release")
+    @auth.csrf_required
     def api_release_measurement_station():
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -2140,9 +2133,11 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/start")
+    @auth.csrf_required
     def api_start_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
+        _ensure_automatic_sources(experiment_id)
         body["device_capture"] = _device_capture(experiment_id)
         try:
             return jsonify(
@@ -2160,6 +2155,7 @@ def create_app(
         "/api/experiments/<int:experiment_id>/steps/"
         "<step_code>/completion-preview"
     )
+    @auth.csrf_required
     def api_preview_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -2178,24 +2174,26 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/steps/<step_code>/complete")
+    @auth.csrf_required
     def api_complete_experiment_step(experiment_id, step_code):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
         body["device_capture"] = _device_capture(experiment_id)
         try:
-            return jsonify(
-                r201.complete_step(
-                    experiment_id,
-                    step_code,
-                    body.get("row_version"),
-                    body.get("result") or {},
-                    body,
-                )
+            completed = r201.complete_step(
+                experiment_id,
+                step_code,
+                body.get("row_version"),
+                body.get("result") or {},
+                body,
             )
+            _ensure_automatic_sources(experiment_id)
+            return jsonify(completed)
         except R201Error as exc:
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/measurements/viscosity")
+    @auth.csrf_required
     def api_record_viscosity(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -2215,9 +2213,7 @@ def create_app(
                 selected_viscometer = candidates[0]
         try:
             if selected_viscometer is not None:
-                r201.claim_viscometer(
-                    experiment_id, int(selected_viscometer), body
-                )
+                body["measurement_device_id"] = int(selected_viscometer)
             return jsonify(
                 r201.record_viscosity(
                     experiment_id, body
@@ -2225,16 +2221,9 @@ def create_app(
             ), 201
         except R201Error as exc:
             return _r201_error(exc)
-        finally:
-            if selected_viscometer is not None:
-                try:
-                    r201.release_viscometer(
-                        experiment_id, int(selected_viscometer), body
-                    )
-                except R201Error:
-                    pass
 
     @app.post("/api/experiments/<int:experiment_id>/data-sources")
+    @auth.csrf_required
     def api_add_experiment_data_source(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body)
@@ -2247,6 +2236,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/device-bindings")
+    @auth.csrf_required
     def api_select_experiment_device(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         try:
@@ -2274,6 +2264,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/deviations")
+    @auth.csrf_required
     def api_open_experiment_deviation(experiment_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body, "opened_by")
@@ -2289,6 +2280,7 @@ def create_app(
         "/api/experiments/<int:experiment_id>/deviations/"
         "<int:deviation_id>/resolve"
     )
+    @auth.csrf_required
     def api_resolve_experiment_deviation(experiment_id, deviation_id):
         body = dict(request.get_json(silent=True) or {})
         _stamp_actor(body, "reviewed_by")
@@ -2303,6 +2295,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/submit")
+    @auth.csrf_required
     def api_submit_experiment(experiment_id):
         body = request.get_json(silent=True) or {}
         try:
@@ -2320,6 +2313,7 @@ def create_app(
 
     @app.post("/api/experiments/<int:experiment_id>/review")
     @auth.roles_required("super_admin", "supervisor")
+    @auth.csrf_required
     def api_review_experiment(experiment_id):
         body = request.get_json(silent=True) or {}
         try:
@@ -2338,6 +2332,7 @@ def create_app(
             return _r201_error(exc)
 
     @app.post("/api/experiments/<int:experiment_id>/evaluate-telemetry")
+    @auth.csrf_required
     def api_evaluate_experiment_telemetry(experiment_id):
         try:
             return jsonify(r201.evaluate_telemetry(experiment_id))
@@ -2368,11 +2363,15 @@ def create_app(
                             experiment_id
                         )
                     )
+                    telemetry = r201.telemetry_summary(experiment_id)
                     payload = {
                         "experiment": experiment,
                         "revision": r201.experiment_revision(
                             experiment_id
                         )["revision"],
+                        "telemetry_integrity_status": telemetry[
+                            "telemetry_integrity_status"
+                        ],
                         **surface,
                     }
                     encoded = _json.dumps(
@@ -2641,6 +2640,7 @@ def create_app(
                         headers={"Content-Disposition": f"attachment; filename=run_{run_id}_report.pdf"})
 
     @app.post("/api/runs/<int:run_id>/tag")
+    @auth.csrf_required
     def api_tag(run_id):
         if repo.get_run(run_id) is None:
             return jsonify({"error": "run not found"}), 404

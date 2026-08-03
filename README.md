@@ -16,7 +16,7 @@
 
 <div align="center">
 
-[![Python](https://img.shields.io/static/v1?style=flat-square&label=Python&message=3.9%2B&color=58d6aa&labelColor=0b1218&logo=python&logoColor=ffffff)](https://www.python.org/)
+[![Python](https://img.shields.io/static/v1?style=flat-square&label=Python&message=3.11%2B&color=58d6aa&labelColor=0b1218&logo=python&logoColor=ffffff)](https://www.python.org/)
 [![Flask](https://img.shields.io/static/v1?style=flat-square&label=Flask&message=3.x&color=58d6aa&labelColor=0b1218&logo=flask&logoColor=ffffff)](https://flask.palletsprojects.com/)
 [![SQLite](https://img.shields.io/static/v1?style=flat-square&label=SQLite&message=embedded&color=58d6aa&labelColor=0b1218&logo=sqlite&logoColor=ffffff)](https://www.sqlite.org/)
 [![Modbus](https://img.shields.io/static/v1?style=flat-square&label=Modbus&message=RTU&color=58d6aa&labelColor=0b1218)]()
@@ -301,6 +301,14 @@ python -m pytest -v
 
 <details>
 <summary><b>📂 点击展开历史更新记录</b></summary>
+
+### 2026-08-03 · 代码评审加固
+
+- 修复测量工位的存储型 XSS，并为实验、追溯、设备绑定、粘度记录和运行补录等写接口补齐 CSRF 防护；默认 `admin/admin` 仅允许在本机完成首次登录改密。
+- SQLite 文件数据库启用 WAL，所有共享连接查询统一加锁；实验详情和设备占用查询不再通过 GET 隐式写库。
+- 库存合规检查与扣减、物品资料更新与合规复核、粘度计占用与读数记录分别合并为原子事务；删除实验时保护关联库存和危废台账。
+- SSE 实时状态补齐遥测完整性字段并保护正在输入的表单；扫码、轮询和提交按钮增加资源释放、防重入与稳定幂等编号。
+- 双击启动和停止脚本增加进程身份核验、慢迁移等待与安全退出兜底；项目最低 Python 版本统一为 3.11。
 
 ### 2026-08-03 · UT-6804 网络采集与设备状态分层
 

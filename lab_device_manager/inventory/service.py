@@ -779,8 +779,12 @@ class InventoryService:
             )
         updates["updated_at_ms"] = self.clock_ms()
         try:
-            updated = self.store.update_item(item_id, updates)
-            if data.get("compliance_review"):
+            if not data.get("compliance_review"):
+                return self.store.update_item(item_id, updates)
+            with self.store.transaction() as conn:
+                updated = self.store.update_item(
+                    item_id, updates, connection=conn
+                )
                 complete, reason = self._hazardous_data_complete(updated)
                 result = "approved" if complete else "needs_correction"
                 self.store.record_compliance_review(
@@ -805,30 +809,36 @@ class InventoryService:
                         "note": None if complete else reason,
                     },
                     release=complete,
+                    connection=conn,
                 )
-                updated = self.store.get_item(item_id)
-            return updated
+                return self.store.get_item(item_id, connection=conn)
         except sqlite3.IntegrityError as exc:
             raise InventoryError("外部条码已被其他物品使用", 409) from exc
 
     def record_movement(self, item_id: int, data: dict) -> dict:
-        item = self.store.get_item(item_id)
-        if item is None:
-            raise InventoryError("库存物品不存在", 404)
         action = self._text(data.get("action"))
         if action not in self.MOVEMENTS:
             raise InventoryError("库存操作类型无效")
-        self._require_operable_chemical(item, action)
-        if (
-            item["dual_control_required"]
-            and action in self.DUAL_CONTROL_ACTIONS
-        ):
-            raise InventoryError(
-                "该物品需要双人确认，请先提交待审批操作", 409
-            )
         payload = self._movement_payload(item_id, action, data)
         try:
-            return self.store.record_movement(item_id, payload)
+            with self.store.transaction() as conn:
+                item = self.store.get_item(item_id, connection=conn)
+                if item is None:
+                    raise InventoryError("库存物品不存在", 404)
+                self._require_operable_chemical(item, action)
+                if (
+                    item["dual_control_required"]
+                    and action in self.DUAL_CONTROL_ACTIONS
+                ):
+                    raise InventoryError(
+                        "该物品需要双人确认，请先提交待审批操作",
+                        409,
+                    )
+                return self.store.record_movement(
+                    item_id, payload, connection=conn
+                )
+        except InventoryError:
+            raise
         except LookupError as exc:
             raise InventoryError(str(exc), 404) from exc
         except ValueError as exc:

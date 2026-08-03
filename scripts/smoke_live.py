@@ -5,17 +5,21 @@ Expected: prints raw company-info bytes '65 4c 64 61 6c 46 69 75 00 64'."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lab_device_manager.config import load_config
-from lab_device_manager.modbus_io import SerialTransport, ModbusClient
+from lab_device_manager.modbus_io import ModbusClient, SerialTransport, TcpTransport
 
 
 def main():
     cfg = load_config()
-    port = sys.argv[1] if len(sys.argv) > 1 else (cfg.devices[0].serial_port if cfg.devices else "")
-    dev = cfg.devices[0] if cfg.devices else None
+    dev = next((item for item in cfg.devices if item.type == "tyd02"), None)
     if dev is None:
-        print("no devices configured; pass a port as argv[1]")
+        print("no TYD02 device configured")
         sys.exit(1)
-    tr = SerialTransport(port, dev.baudrate, dev.parity)
+    if len(sys.argv) > 1:
+        tr = SerialTransport(sys.argv[1], dev.baudrate, dev.parity)
+    elif dev.transport == "tcp":
+        tr = TcpTransport(dev.host, dev.tcp_port, dev.connect_timeout_s)
+    else:
+        tr = SerialTransport(dev.serial_port, dev.baudrate, dev.parity)
     tr.open()
     try:
         c = ModbusClient(tr, slave=dev.modbus_addr)

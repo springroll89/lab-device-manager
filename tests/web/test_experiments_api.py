@@ -376,6 +376,35 @@ def test_material_container_can_be_registered_and_resolved_by_scan():
     assert resolved.get_json()["material"]["material_name"] == "TEOS"
 
 
+def test_material_container_legacy_endpoint_keeps_compliance_fields():
+    app, _, _ = _app()
+    client = app.test_client()
+
+    created = client.post(
+        "/api/material-containers",
+        json={
+            "container_code": "RM-HCL-0001",
+            "material_name": "盐酸",
+            "quantity_remaining": 500,
+            "unit": "mL",
+            "hazardous_status": "listed",
+            "storage_group": "acid",
+            "sds_url": "https://example.invalid/hcl-sds",
+            "sds_verified": True,
+            "controlled_categories": ["易制毒第三类"],
+            "dual_control_required": True,
+            "dual_control_reason": "单位内部加严",
+        },
+    )
+
+    assert created.status_code == 201
+    body = created.get_json()
+    assert body["hazardous_status"] == "listed"
+    assert body["storage_group"] == "acid"
+    assert body["controlled_categories"] == ["易制毒第三类"]
+    assert body["dual_control_required"] is True
+
+
 def test_material_management_page_and_offline_qr_are_available():
     app, _, _ = _app()
     client = app.test_client()
@@ -681,6 +710,7 @@ def test_data_source_binding_and_sse_snapshot():
     body = stream.data.decode()
     assert "event: snapshot" in body
     assert '"acc_volume": 105' in body
+    assert '"telemetry_integrity_status":' in body
     assert "temperature_series" not in body
     script = client.get("/static/experiment.js").data
     assert b"setInterval(connectLive" not in script
@@ -754,6 +784,16 @@ def test_automatic_binding_reserves_unique_stirrer_and_never_double_assigns():
     )
     repo._conn.commit()
 
+    for experiment in (first, second):
+        started = client.post(
+            f"/api/experiments/{experiment['id']}/steps/R201-10/start",
+            json={
+                "row_version": experiment["row_version"],
+                "client_event_id": f"start-{experiment['id']}",
+            },
+        )
+        assert started.status_code == 200
+
     first_detail = client.get(
         f"/api/experiments/{first['id']}"
     ).get_json()
@@ -771,6 +811,23 @@ def test_automatic_binding_reserves_unique_stirrer_and_never_double_assigns():
     assert workbench["active_count"] == 2
     assert len(workbench["reservations"]) == 1
     assert workbench["reservations"][0]["experiment_id"] == first["id"]
+
+
+def test_experiment_detail_get_does_not_create_bindings_or_reservations():
+    app, repo, _ = _single_stirrer_app()
+    client = app.test_client()
+    experiment = client.post("/api/experiments", json=CREATE).get_json()
+    repo._conn.execute(
+        "UPDATE experiment SET current_step_code='R201-10' WHERE id=?",
+        (experiment["id"],),
+    )
+    repo._conn.commit()
+
+    response = client.get(f"/api/experiments/{experiment['id']}")
+
+    assert response.status_code == 200
+    assert repo.experiments.list_data_source_bindings(experiment["id"]) == []
+    assert repo.experiments.list_device_reservations(experiment["id"]) == []
 
 
 def test_multiple_stirrers_are_visible_and_batch_selection_is_explicit():

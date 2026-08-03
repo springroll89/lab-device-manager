@@ -7,10 +7,11 @@ Run with the stirrer powered & its serial line connected:
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lab_device_manager.config import load_config
-from lab_device_manager.modbus_io import SerialTransport, ModbusClient
+from lab_device_manager.modbus_io import ModbusClient, SerialTransport, TcpTransport
 
 _cfg = load_config()
-PORT = sys.argv[1] if len(sys.argv) > 1 else (_cfg.devices[0].serial_port if _cfg.devices else "")
+DEVICE = next((item for item in _cfg.devices if item.type == "stirrer"), None)
+PORT = sys.argv[1] if len(sys.argv) > 1 else (DEVICE.serial_port if DEVICE else "")
 BAUDS = [9600, 19200, 4800, 38400, 115200]
 PARITIES = ["NONE", "EVEN", "ODD"]   # 8N1 / 8E1 / 8O1
 ADDRS = [1, 2, 3, 16]
@@ -19,7 +20,11 @@ EXPECT = 203
 
 def try_config(port, baud, parity, addr):
     try:
-        tr = SerialTransport(port, baud, parity)
+        tr = (
+            TcpTransport(DEVICE.host, DEVICE.tcp_port, DEVICE.connect_timeout_s)
+            if DEVICE and DEVICE.transport == "tcp" and len(sys.argv) == 1
+            else SerialTransport(port, baud, parity)
+        )
         tr.open()
     except OSError:
         return None
@@ -34,6 +39,8 @@ def try_config(port, baud, parity, addr):
 
 
 def main():
+    if DEVICE is None:
+        raise SystemExit("no stirrer device configured")
     print(f"sweeping {PORT} for stirrer (expect machine type {EXPECT})...")
     found = []
     for parity in PARITIES:

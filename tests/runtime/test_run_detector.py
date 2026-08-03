@@ -116,6 +116,16 @@ def test_actual_volume_is_lifetime_delta():
     assert repo.runs_closed[-1][2] == 50.0  # actual_volume = 150 - 100
 
 
+def test_actual_volume_survives_accumulator_reset():
+    d, repo = _detector()
+    d.on_sample(_snap_with_acc("running", acc=100.0))
+    d.on_sample(_snap_with_acc("running", acc=120.0))
+    d.on_sample(_snap_with_acc("running", acc=2.0))
+    d.on_sample(_snap_with_acc("stopped", acc=7.0))
+
+    assert repo.runs_closed[-1][2] == 27.0
+
+
 def test_zero_accumulator_at_close_is_not_treated_as_missing():
     d, repo = _detector()
     d.on_sample(_snap_with_acc("running", acc=0.0))

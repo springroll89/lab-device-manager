@@ -48,6 +48,15 @@ def test_repository_enables_foreign_keys_and_applies_r201_migration():
     assert "controlled_categories_json" in inventory_columns
 
 
+def test_file_repository_uses_wal_and_normal_synchronous(tmp_path):
+    repo = Repository(str(tmp_path / "lab.db"))
+
+    assert repo._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert repo._conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+
+    repo.close()
+
+
 def test_viscometer_lease_is_exclusive_and_reusable_after_release():
     repo = Repository(":memory:")
     first = repo.experiments.create_experiment(
@@ -84,6 +93,11 @@ def test_viscometer_lease_is_exclusive_and_reusable_after_release():
     assert repo.experiments.list_device_reservations(
         now_ms=2011
     ) == []
+    stored_status = repo._conn.execute(
+        "SELECT status FROM device_reservation WHERE id=?",
+        (expiring["id"],),
+    ).fetchone()[0]
+    assert stored_status == "active"
 
 
 def test_existing_database_is_backed_up_once_before_pending_migrations(tmp_path):
@@ -204,6 +218,34 @@ def test_delete_experiment_refuses_to_hide_inventory_ledger_history():
     )
 
     with pytest.raises(RuntimeError, match="库存流水"):
+        repo.experiments.delete_experiment(created["id"])
+
+    assert repo.experiments.get_experiment(created["id"]) is not None
+
+
+def test_delete_experiment_refuses_when_hazardous_waste_references_it():
+    repo = Repository(":memory:")
+    created = repo.experiments.create_experiment(
+        _experiment_payload(), now_ms=1000
+    )
+    location = repo._conn.execute(
+        """INSERT INTO storage_location(
+             location_code, display_name, active, created_at_ms, created_by)
+           VALUES('WASTE-01','危废暂存区',1,1000,'张三')"""
+    )
+    repo._conn.execute(
+        """INSERT INTO hazardous_waste_container(
+             waste_code, waste_name, waste_category_code, physical_state,
+             hazard_characteristics_json, composition, quantity, unit,
+             package_type, storage_location_id, source_experiment_id,
+             started_at_ms, created_at_ms, updated_at_ms, created_by)
+           VALUES('HW-0001','测试危废','HW49','liquid','[]','测试',1,'kg',
+                  '桶',?,?,1000,1000,1000,'张三')""",
+        (location.lastrowid, created["id"]),
+    )
+    repo._conn.commit()
+
+    with pytest.raises(RuntimeError, match="危废"):
         repo.experiments.delete_experiment(created["id"])
 
     assert repo.experiments.get_experiment(created["id"]) is not None

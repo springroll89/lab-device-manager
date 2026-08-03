@@ -49,6 +49,25 @@ function inventoryEventId(prefix) {
   return `${prefix}-${unique}`;
 }
 
+function stableInventoryEventId(form, prefix) {
+  if (!form.dataset.clientEventId) {
+    form.dataset.clientEventId = inventoryEventId(prefix);
+  }
+  return form.dataset.clientEventId;
+}
+
+function lockInventoryForm(event) {
+  const form = event.currentTarget;
+  if (form.dataset.submitting === "true") return null;
+  form.dataset.submitting = "true";
+  const submitter = event.submitter;
+  if (submitter) submitter.disabled = true;
+  return () => {
+    delete form.dataset.submitting;
+    if (submitter) submitter.disabled = false;
+  };
+}
+
 async function inventoryApi(url, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const csrfHeaders = !["GET","HEAD","OPTIONS"].includes(method)
@@ -506,6 +525,7 @@ function toggleChemicalFields() {
 }
 
 function resetItemForm(item = null) {
+  delete inventoryById("inventoryItemForm").dataset.clientEventId;
   const form = inventoryById("inventoryItemForm");
   form.reset();
   inventoryById("itemId").value = item?.id || "";
@@ -631,18 +651,26 @@ function itemFormPayload() {
 
 async function submitItemForm(event) {
   event.preventDefault();
+  const unlock = lockInventoryForm(event);
+  if (!unlock) return;
   const id = inventoryById("itemId").value;
   const payload = itemFormPayload();
+  payload.client_event_id = stableInventoryEventId(
+    event.currentTarget, id ? `inventory-update-${id}` : "inventory-create"
+  );
   try {
     const item = await inventoryApi(
       id ? `/api/inventory/items/${id}` : "/api/inventory/items",
       {method:id ? "PATCH" : "POST", body:JSON.stringify(payload)}
     );
     inventoryById("itemFormDialog").close();
+    delete event.currentTarget.dataset.clientEventId;
     await loadInventory();
     await openInventoryDetail(item.id);
   } catch (error) {
     setInventoryStatus(error.message, true, "itemFormStatus");
+  } finally {
+    unlock();
   }
 }
 
@@ -785,6 +813,7 @@ async function openInventoryDetail(itemId) {
 }
 
 function openOperation(item, action, label) {
+  delete inventoryById("inventoryOperationForm").dataset.clientEventId;
   inventoryById("operationItemId").value = item.id;
   inventoryById("operationAction").value = action;
   inventoryById("inventoryOperationTitle").textContent =
@@ -807,13 +836,17 @@ function openOperation(item, action, label) {
 
 async function submitOperation(event) {
   event.preventDefault();
+  const unlock = lockInventoryForm(event);
+  if (!unlock) return;
   const itemId = inventoryById("operationItemId").value;
   const action = inventoryById("operationAction").value;
   const quantity = Number(inventoryById("operationQuantity").value);
   const payload = {
     action,
     note:inventoryById("operationNote").value || null,
-    client_event_id:inventoryEventId(`inventory-${action}`)
+    client_event_id:stableInventoryEventId(
+      event.currentTarget, `inventory-${action}-${itemId}`
+    )
   };
   if (["received","issued"].includes(action)) payload.quantity = quantity;
   if (action === "adjusted") payload.actual_quantity = quantity;
@@ -828,6 +861,7 @@ async function submitOperation(event) {
       }
     );
     inventoryById("inventoryOperationDialog").close();
+    delete event.currentTarget.dataset.clientEventId;
     inventoryById("inventoryDetailDialog").close();
     await loadInventory();
     if (requiresApproval) {
@@ -837,6 +871,8 @@ async function submitOperation(event) {
     }
   } catch (error) {
     setInventoryStatus(error.message, true, "operationStatus");
+  } finally {
+    unlock();
   }
 }
 

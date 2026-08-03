@@ -25,6 +25,7 @@ class RunDetector:
         self._lifetime_start: float = 0.0
         self._last_acc: Optional[float] = None
         self._last_acc_unit: Optional[str] = None
+        self._run_actual: float = 0.0
         self._had_comms_loss = False
 
     def on_sample(self, snap: StatusSnapshot):
@@ -43,6 +44,9 @@ class RunDetector:
             self._emit(now_ms, "comms_recover", "info")
 
         if self._run_id is not None:
+            if snap.acc_volume is not None and self._last_acc is not None:
+                delta = snap.acc_volume - self._last_acc
+                self._run_actual += delta if delta >= 0 else snap.acc_volume
             self._last_acc = snap.acc_volume
             self._last_acc_unit = snap.acc_unit
             self.repo.add_sample(self._run_id, self.device_id, now_ms, snap.state,
@@ -66,6 +70,7 @@ class RunDetector:
             self._alarm_count = 0
             self._last_acc = snap.acc_volume
             self._last_acc_unit = snap.acc_unit
+            self._run_actual = 0.0
             self._had_comms_loss = False
             self._emit(now_ms, "start", "info")
         elif new == "paused" and old == "running" and self._run_id is not None:
@@ -83,10 +88,7 @@ class RunDetector:
                 )
             )
             closed = self._run_id
-            ending_acc = (
-                snap.acc_volume if snap.acc_volume is not None else 0.0
-            )
-            actual = ending_acc - self._lifetime_start
+            actual = self._run_actual
             self.repo.close_run(closed, now_ms, end_status,
                                 actual, snap.acc_unit,
                                 snap.acc_volume, snap.acc_unit, self._alarm_count)
@@ -100,11 +102,7 @@ class RunDetector:
             return
         now_ms = int(self.clock() * 1000)
         run_id = self._run_id
-        actual = (
-            self._last_acc - self._lifetime_start
-            if self._last_acc is not None
-            else None
-        )
+        actual = self._run_actual if self._last_acc is not None else None
         if self._had_comms_loss:
             end_status = "comms_interrupted"
         self.repo.close_run(

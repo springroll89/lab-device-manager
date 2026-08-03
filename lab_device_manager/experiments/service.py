@@ -460,13 +460,16 @@ class R201Service:
             "step_labels": STEP_LABELS,
         }
 
-    def get_traceability(self, experiment_id: int) -> dict:
-        experiment = self._get(experiment_id)
-        self.store.ensure_batch_trace_item(
+    def telemetry_summary(self, experiment_id: int) -> dict:
+        if self.store.get_experiment(experiment_id) is None:
+            raise R201Error("experiment not found", 404)
+        return self._telemetry_summary(
             experiment_id,
-            now_ms=experiment["created_at_ms"],
-            actor=experiment["operator"],
+            self.store.list_experiment_events(experiment_id),
         )
+
+    def get_traceability(self, experiment_id: int) -> dict:
+        self._get(experiment_id)
         return {
             "items": self.store.list_trace_items(experiment_id),
             "locations": self.store.list_storage_locations(),
@@ -1321,29 +1324,52 @@ class R201Service:
                 values[optional] = data[optional]
         if provenance:
             values["data_provenance"] = provenance
-        measurement = self.store.add_measurement(
-            experiment_id,
-            {
-                "client_event_id": data["client_event_id"],
-                "measurement_type": "viscosity",
-                "effective_at_ms": event["effective_at_ms"],
-                "sample_id": data.get("sample_id"),
-                "source_type": (
-                    "device_confirmed"
-                    if "viscosity_mpas" in provenance
-                    else data.get("source_type", "manual")
-                ),
-                "valid": valid,
-                "invalid_reason": invalid_reason,
-                "values": values,
-                "raw_payload_sha256": data.get("raw_payload_sha256"),
-                "parser_version": data.get("parser_version"),
-                "operator": data["actor"],
-                "operator_user_id": data.get("actor_user_id"),
-            },
-            active["id"],
-            event=event,
-        )
+        measurement_data = {
+            "client_event_id": data["client_event_id"],
+            "measurement_type": "viscosity",
+            "effective_at_ms": event["effective_at_ms"],
+            "sample_id": data.get("sample_id"),
+            "source_type": (
+                "device_confirmed"
+                if "viscosity_mpas" in provenance
+                else data.get("source_type", "manual")
+            ),
+            "valid": valid,
+            "invalid_reason": invalid_reason,
+            "values": values,
+            "raw_payload_sha256": data.get("raw_payload_sha256"),
+            "parser_version": data.get("parser_version"),
+            "operator": data["actor"],
+            "operator_user_id": data.get("actor_user_id"),
+        }
+        measurement_device_id = data.get("measurement_device_id")
+        try:
+            with self.store.transaction() as conn:
+                if measurement_device_id is not None:
+                    self.store.claim_measurement_device(
+                        experiment_id,
+                        int(measurement_device_id),
+                        str(data["actor"]),
+                        data.get("actor_user_id"),
+                        self.clock_ms(),
+                        connection=conn,
+                    )
+                measurement = self.store.add_measurement(
+                    experiment_id,
+                    measurement_data,
+                    active["id"],
+                    event=event,
+                    connection=conn,
+                )
+                if measurement_device_id is not None:
+                    self.store.release_measurement_device(
+                        experiment_id,
+                        int(measurement_device_id),
+                        self.clock_ms(),
+                        connection=conn,
+                    )
+        except (RuntimeError, ValueError) as exc:
+            raise R201Error(str(exc), 409) from exc
         detail = self.get_experiment(experiment_id)
         return {
             "experiment": detail["experiment"],
@@ -1378,6 +1404,11 @@ class R201Service:
             if existing is None:
                 raise R201Error(
                     "idempotent data source result is unavailable", 409
+                )
+            if existing.get("unlinked_at_ms") is not None:
+                raise R201Error(
+                    "该操作编号对应的数据源绑定已经解除，请重新绑定",
+                    409,
                 )
             return existing
         if data["link_method"] not in ("manual", "automatic"):

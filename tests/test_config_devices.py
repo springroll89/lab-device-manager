@@ -60,6 +60,16 @@ def test_defaults(tmp_path):
     assert cfg.tls_keyfile == ""
 
 
+def test_rejects_nonpositive_sample_interval(tmp_path):
+    import pytest
+
+    p = tmp_path / "c.toml"
+    p.write_text("sample_interval_ms = 0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sample_interval_ms"):
+        load_config(str(p))
+
+
 def test_loads_lan_and_https_settings(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(textwrap.dedent("""

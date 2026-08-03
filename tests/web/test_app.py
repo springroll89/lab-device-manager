@@ -446,6 +446,28 @@ def test_dashboard_separates_communication_and_operating_status(tmp_path):
     assert b"comm-instrument_unresponsive" in page.data
 
 
+def test_reviewed_frontends_use_safe_dom_csrf_and_single_scanner_stream(
+    tmp_path,
+):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    station = client.get("/static/measurement-station.js").data
+    experiment = client.get("/static/experiment.js").data
+    materials = client.get("/static/materials.js").data
+    scanner = client.get("/static/scanner.js").data
+
+    assert b"card.innerHTML" not in station
+    assert b"textContent = experiment.batch_id" in station
+    assert b'"X-CSRF-Token"' in experiment
+    assert b"currentSession?.csrf_token" in experiment
+    assert b'materialApi("/api/session")' in materials
+    assert b"materialSession = session" in materials
+    assert b'"X-CSRF-Token"' in materials
+    open_body = scanner.split(b"async function open", 1)[1]
+    assert open_body.index(b"await stop()") < open_body.index(b"getUserMedia")
+
+
 def test_account_creation_keeps_stable_form_reference(tmp_path):
     app, repo, did = _app(tmp_path)
     script = app.test_client().get("/static/accounts.js")
@@ -600,6 +622,26 @@ def test_login_page_and_account_auth_mode_are_public(tmp_path):
     }
 
 
+def test_initial_admin_default_password_is_local_setup_only(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+
+    remote = app.test_client()
+    denied = remote.post(
+        "/login",
+        json={"username": "admin", "password": "admin"},
+        environ_base={"REMOTE_ADDR": "192.168.1.77"},
+    )
+    local = app.test_client().post(
+        "/login",
+        json={"username": "admin", "password": "admin"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert denied.status_code == 403
+    assert denied.get_json()["error"] == "initial_setup_local_only"
+    assert local.status_code == 200
+
+
 def test_initial_admin_login_requires_immediate_password_change(tmp_path):
     app, repo, did = _authenticated_app(tmp_path)
     client = app.test_client()
@@ -649,6 +691,20 @@ def test_admin_changes_password_and_can_enter_system(tmp_path):
     assert session_data["can_manage_accounts"] is True
 
 
+def test_experiment_write_requires_csrf_after_login(tmp_path):
+    app, repo, did = _authenticated_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _change_password(client, "admin", "Admin1234")
+
+    denied = client.post(
+        "/api/experiments", json=_experiment_request()
+    )
+
+    assert denied.status_code == 403
+    assert denied.get_json()["error"] == "invalid_csrf_token"
+
+
 def test_super_admin_deletes_experiment_and_workbench_shows_creator_account(
     tmp_path,
 ):
@@ -658,7 +714,9 @@ def test_super_admin_deletes_experiment_and_workbench_shows_creator_account(
     _change_password(admin, "admin", "Admin1234")
     session_data = admin.get("/api/session").get_json()
     created = admin.post(
-        "/api/experiments", json=_experiment_request()
+        "/api/experiments",
+        json=_experiment_request(),
+        headers={"X-CSRF-Token": session_data["csrf_token"]},
     ).get_json()
 
     workbench = admin.get("/api/workbench").get_json()
@@ -691,7 +749,9 @@ def test_supervisor_and_operator_cannot_delete_experiments(tmp_path):
     _change_password(admin, "admin", "Admin1234")
     admin_session = admin.get("/api/session").get_json()
     created = admin.post(
-        "/api/experiments", json=_experiment_request()
+        "/api/experiments",
+        json=_experiment_request(),
+        headers={"X-CSRF-Token": admin_session["csrf_token"]},
     ).get_json()
 
     for username, display_name, role in (
@@ -907,17 +967,20 @@ def test_same_display_name_cannot_take_over_batch_or_spoof_run_tag(tmp_path):
             "reviewer": "",
             "spec_snapshot": {},
         },
+        headers={"X-CSRF-Token": csrf},
     ).get_json()
 
     worker = app.test_client()
     _login(worker, "same-name-worker", "Worker123")
     _change_password(worker, "Worker123", "Worker456")
+    worker_csrf = worker.get("/api/session").get_json()["csrf_token"]
     denied = worker.post(
         f"/api/experiments/{experiment['id']}/steps/R201-01/start",
         json={
             "row_version": experiment["row_version"],
             "client_event_id": "same-name-takeover",
         },
+        headers={"X-CSRF-Token": worker_csrf},
     )
 
     run_id = repo.open_run(did, 1, 1000, {})
@@ -925,6 +988,7 @@ def test_same_display_name_cannot_take_over_batch_or_spoof_run_tag(tmp_path):
     tagged = worker.post(
         f"/api/runs/{run_id}/tag",
         json={"operator": "伪造姓名", "project_tag": "验证"},
+        headers={"X-CSRF-Token": worker_csrf},
     )
     run = repo.get_run(run_id)
 

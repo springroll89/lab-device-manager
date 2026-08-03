@@ -39,7 +39,7 @@ fi
 
 print "正在停止 Puricore 实验系统（PID $APP_PID）……"
 kill -TERM "$APP_PID"
-for attempt in {1..10}; do
+for attempt in {1..30}; do
   if ! kill -0 "$APP_PID" 2>/dev/null; then
     rm -f "$PID_FILE"
     notify "Puricore 实验系统已安全停止。"
@@ -48,5 +48,15 @@ for attempt in {1..10}; do
   sleep 1
 done
 
-notify "进程未在 10 秒内退出；没有强制结束，请查看终端或活动监视器。"
+COMMAND="$(ps -p "$APP_PID" -o command= 2>/dev/null || true)"
+if [[ -n "$COMMAND" ]] \
+  && print -r -- "$COMMAND" | grep -q -- "-m lab_device_manager"; then
+  kill -KILL "$APP_PID"
+  rm -f "$PID_FILE"
+  notify "系统未在 30 秒内退出，已强制停止。"
+  exit 0
+fi
+
+rm -f "$PID_FILE"
+notify "停止期间进程身份发生变化，为安全起见没有强制操作。"
 exit 1

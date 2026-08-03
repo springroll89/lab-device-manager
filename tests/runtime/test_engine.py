@@ -6,6 +6,15 @@ from lab_device_manager.db.repository import Repository
 from lab_device_manager.instruments.base import StatusSnapshot
 
 
+def _wait_until(predicate, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 def _snap(state):
     return StatusSnapshot(timestamp=time.time(), state=state, work_mode="仅注入",
                           device_id="d", acc_volume=1.0, acc_unit="mL")
@@ -31,7 +40,7 @@ def test_engine_records_run_to_db():
         return ScriptedAdapter(seq), (lambda: None)
     eng = Engine(repo, devices, sample_interval_s=0.02, adapter_factory=factory)
     eng.start()
-    time.sleep(0.25)
+    assert _wait_until(lambda: len(repo.list_untagged_runs()) == 1)
     eng.stop()
     runs = repo.list_untagged_runs()
     assert len(runs) == 1
@@ -50,7 +59,10 @@ def test_tolerates_unreachable_device():
         return ScriptedAdapter(seq), (lambda: None)
     eng = Engine(repo, devices, sample_interval_s=0.02, adapter_factory=factory)
     eng.start()                                   # must NOT raise on the dead device
-    time.sleep(0.25)
+    assert _wait_until(
+        lambda: len(eng.latest()) == 2
+        and len(repo.list_untagged_runs()) == 1
+    )
     eng.stop()
     latest = eng.latest()
     assert len(latest) == 2                       # both registered

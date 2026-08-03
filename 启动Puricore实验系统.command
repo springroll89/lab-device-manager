@@ -85,6 +85,15 @@ if port_is_occupied; then
 fi
 
 if [[ -f "$PID_FILE" ]]; then
+  RECORDED_PID="$(tr -cd '0-9' < "$PID_FILE")"
+  RECORDED_COMMAND=""
+  if [[ -n "$RECORDED_PID" ]]; then
+    RECORDED_COMMAND="$(ps -p "$RECORDED_PID" -o command= 2>/dev/null || true)"
+  fi
+  if [[ -n "$RECORDED_COMMAND" ]] \
+    && print -r -- "$RECORDED_COMMAND" | grep -q -- "-m lab_device_manager"; then
+    fail "检测到本系统进程仍在运行（PID $RECORDED_PID），请先双击停止快捷方式。"
+  fi
   rm -f "$PID_FILE"
 fi
 
@@ -112,7 +121,7 @@ stop_child() {
 
 trap stop_child HUP INT TERM
 
-for attempt in {1..20}; do
+for attempt in {1..120}; do
   if puricore_is_ready; then
     show_access_info
     print "服务运行期间请保留此窗口（可以最小化）；也可以双击“停止Puricore实验系统”安全停止。"
@@ -136,6 +145,20 @@ for attempt in {1..20}; do
   sleep 1
 done
 
-kill -TERM "$APP_PID" 2>/dev/null || true
+print "启动已超过 120 秒，可能正在执行数据库升级；将继续等待，不会中断。"
+while kill -0 "$APP_PID" 2>/dev/null; do
+  if puricore_is_ready; then
+    show_access_info
+    open "$PC_URL"
+    osascript -e 'display notification "PC 与平板访问服务已经就绪" with title "Puricore 实验系统"' >/dev/null 2>&1
+    wait "$APP_PID"
+    APP_EXIT_CODE=$?
+    cleanup_pid_file
+    exit "$APP_EXIT_CODE"
+  fi
+  sleep 5
+done
+
 cleanup_pid_file
-fail "等待 20 秒后服务仍未就绪，请查看日志：$LOG_FILE"
+tail -n 30 "$LOG_FILE"
+fail "应用进程已退出，请根据上面的日志检查配置。"

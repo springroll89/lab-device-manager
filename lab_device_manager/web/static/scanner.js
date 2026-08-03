@@ -48,6 +48,7 @@
   }
 
   async function open(options = {}) {
+    await stop();
     const dialog = document.getElementById("cameraScanDialog");
     const video = document.getElementById("cameraScanVideo");
     const status = document.getElementById("cameraScanStatus");

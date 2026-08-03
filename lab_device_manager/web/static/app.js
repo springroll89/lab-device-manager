@@ -15,6 +15,14 @@ const COMMUNICATION_LABELS = {
   instrument_unresponsive: "仪器无响应",
   communication_error: "通讯异常",
 };
+let dashboardSession = null;
+
+async function dashboardJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "请求失败");
+  return data;
+}
 
 function fmtValue(value, unit, decimals = 1) {
   const number = Number(value);
@@ -153,7 +161,7 @@ function buildDeviceCard(dev, latest, metrics) {
 
 async function pollStatus() {
   let d;
-  try { d = await (await fetch("/api/status")).json(); } catch (e) { return; }
+  try { d = await dashboardJson("/api/status"); } catch (e) { return; }
   const box = $("devices");
   box.textContent = "";
   for (const dev of (d.devices || [])) {
@@ -173,7 +181,7 @@ async function loadRuns() {
   if (operator) params.set("operator", operator);
   if (status) params.set("end_status", status);
   let runs = [];
-  try { runs = await (await fetch("/api/runs?" + params.toString())).json(); } catch (e) { return; }
+  try { runs = await dashboardJson("/api/runs?" + params.toString()); } catch (e) { return; }
   const tb = $("runs").querySelector("tbody");
   tb.textContent = "";
   for (const r of runs) {
@@ -216,22 +224,38 @@ function exportExcel() {
 }
 
 async function tagRun(runId) {
-  const operator = prompt("操作人？");
-  if (operator === null) return;
   const project = prompt("项目 / 实验 tag？");
   if (project === null) return;
   try {
-    await fetch("/api/runs/" + runId + "/tag", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({operator: operator || "", project_tag: project || "", experiment_tag: "", remark: ""})
+    await dashboardJson("/api/runs/" + runId + "/tag", {
+      method: "POST", headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": dashboardSession?.csrf_token || ""
+      },
+      body: JSON.stringify({project_tag: project || "", experiment_tag: "", remark: ""})
     });
-    loadRuns();
+    await loadRuns();
   } catch (e) {
     alert("补录失败，请重试");
   }
 }
 
-pollStatus();
-loadRuns();
-setInterval(pollStatus, 1000);
-setInterval(loadRuns, 3000);
+async function repeatAfter(task, delayMs) {
+  try {
+    await task();
+  } finally {
+    window.setTimeout(() => repeatAfter(task, delayMs), delayMs);
+  }
+}
+
+async function startDashboard() {
+  try {
+    dashboardSession = await dashboardJson("/api/session");
+  } catch (_) {
+    return;
+  }
+  repeatAfter(pollStatus, 1000);
+  repeatAfter(loadRuns, 3000);
+}
+
+startDashboard();

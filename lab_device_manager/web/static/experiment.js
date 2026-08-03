@@ -184,6 +184,7 @@ let clockStatus = "unknown";
 let toastTimer = null;
 let flushingOutbox = false;
 let liveConnecting = false;
+let liveSource = null;
 let viewedStepCode = null;
 let currentUserId = null;
 let currentSession = null;
@@ -201,9 +202,16 @@ function uid(prefix = "evt") {
 }
 
 async function api(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
   const response = await fetch(url, {
     ...options,
-    headers: {"Content-Type":"application/json", ...(options.headers || {})}
+    headers: {
+      "Content-Type":"application/json",
+      ...(!["GET","HEAD","OPTIONS"].includes(method)
+        ? {"X-CSRF-Token":currentSession?.csrf_token || ""}
+        : {}),
+      ...(options.headers || {})
+    }
   });
   let data = null;
   try { data = await response.json(); } catch (_) {}
@@ -2524,7 +2532,16 @@ async function recordViscosity(event) {
   const data = {};
   for (const [key,value] of form.entries()) {
     if (!String(value).trim()) continue;
-    data[key] = ["rotor"].includes(key) ? value : Number(value);
+    if (["rotor"].includes(key)) {
+      data[key] = value;
+      continue;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      toast(`${FIELD_LABELS[key] || key}必须填写有效数字。`, true);
+      return;
+    }
+    data[key] = numeric;
   }
   try {
     await mutate(
@@ -2873,7 +2890,7 @@ function appendLiveTemperature(processStatus) {
 }
 
 async function connectLive() {
-  if (!experimentId || liveConnecting) return;
+  if (!experimentId || liveConnecting || liveSource) return;
   liveConnecting = true;
   try {
     await api(`/api/experiments/${experimentId}/evaluate-telemetry`, {
@@ -2881,9 +2898,25 @@ async function connectLive() {
       body:"{}"
     });
   } catch (_) {}
-  const source = new EventSource(`/api/experiments/${experimentId}/stream`);
+  let source;
+  try {
+    source = new EventSource(`/api/experiments/${experimentId}/stream`);
+    liveSource = source;
+    liveConnecting = false;
+  } catch (_) {
+    liveConnecting = false;
+    liveSource = null;
+    byId("liveState").textContent = "实时连接失败，请刷新重试";
+    return;
+  }
   source.addEventListener("snapshot", async event => {
-    const data = JSON.parse(event.data);
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch (_) {
+      byId("liveState").textContent = "收到异常实时数据，等待下一帧";
+      return;
+    }
     byId("liveState").textContent = `实时 · ${new Date().toLocaleTimeString("zh-CN",{hour12:false})}`;
     if (data.available_devices) {
       state.available_devices = data.available_devices;
@@ -2903,6 +2936,7 @@ async function connectLive() {
       )
     ) {
       source.close();
+      liveSource = null;
       liveConnecting = false;
       await loadDetail();
       return;
@@ -2914,11 +2948,18 @@ async function connectLive() {
     if (data.telemetry_integrity_status) {
       state.telemetry_integrity_status = data.telemetry_integrity_status;
     }
-    renderCurrentStep();
+    if (!viewedStepCode && !preserveStepFormDuringLiveUpdate()) {
+      renderCurrentStep();
+    }
     renderExecutionAlerts();
   });
   source.onerror = () => {
     byId("liveState").textContent = "实时连接重试中";
+    if (source.readyState === EventSource.CLOSED) {
+      liveSource = null;
+      liveConnecting = false;
+      window.setTimeout(() => connectLive(), 1000);
+    }
   };
 }
 

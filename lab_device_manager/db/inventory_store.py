@@ -260,9 +260,11 @@ class InventoryStore:
         ).fetchone()
         return _item(row)
 
-    def get_item(self, item_id: int) -> Optional[dict]:
-        with self._lock:
-            row = self._conn.execute(
+    def get_item(self, item_id: int, *, connection=None) -> Optional[dict]:
+        conn = connection or self._conn
+        context = self._lock if connection is None else nullcontext()
+        with context:
+            row = conn.execute(
                 "SELECT * FROM material_container WHERE id=?", (item_id,)
             ).fetchone()
         return _item(row)
@@ -394,7 +396,7 @@ class InventoryStore:
             ).fetchall()
         return [_item(row) for row in rows]
 
-    def update_item(self, item_id: int, updates: dict) -> dict:
+    def update_item(self, item_id: int, updates: dict, *, connection=None) -> dict:
         allowed = {
             "material_name",
             "category",
@@ -450,7 +452,12 @@ class InventoryStore:
             return current
         values["updated_at_ms"] = updates["updated_at_ms"]
         assignments = ", ".join(f"{key}=?" for key in values)
-        with self.transaction() as conn:
+        context = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with context as conn:
             cursor = conn.execute(
                 f"UPDATE material_container SET {assignments} WHERE id=?",
                 [*values.values(), item_id],
@@ -463,9 +470,19 @@ class InventoryStore:
         return _item(row)
 
     def record_compliance_review(
-        self, item_id: int, data: dict, *, release: bool
+        self,
+        item_id: int,
+        data: dict,
+        *,
+        release: bool,
+        connection=None,
     ) -> dict:
-        with self.transaction() as conn:
+        context = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with context as conn:
             item = conn.execute(
                 "SELECT * FROM material_container WHERE id=?", (item_id,)
             ).fetchone()
@@ -568,6 +585,7 @@ class InventoryStore:
         if item["status"] == "disposed":
             raise ValueError("物品已处置，不能再执行库存操作")
         quantity = data.get("quantity")
+        opened_on = item["opened_on"]
         if action in {"received", "issued", "experiment_used"}:
             quantity = float(quantity)
             if quantity <= 0:
@@ -579,6 +597,7 @@ class InventoryStore:
             quantity_after = current + quantity
             if status == "empty":
                 status = "available"
+                opened_on = None
         elif action in {"issued", "experiment_used"}:
             if status != "available":
                 raise ValueError("当前库存状态不可领用")
@@ -601,6 +620,8 @@ class InventoryStore:
                 else "available"
             )
         elif action == "opened":
+            if status != "available":
+                raise ValueError("只有可用状态的物品可以标记开封")
             delta = 0
             quantity_after = current
         elif action == "quarantined":
@@ -614,9 +635,10 @@ class InventoryStore:
         else:
             raise ValueError("不支持的库存操作")
         unit = str(data.get("unit") or item["unit"] or "").strip()
+        if action in {"received", "issued", "experiment_used", "adjusted"} and not unit:
+            raise ValueError("数量操作必须填写单位")
         if item["unit"] and unit != item["unit"]:
             raise ValueError("库存操作单位与物品单位不一致")
-        opened_on = item["opened_on"]
         if action in {"opened", "experiment_used"} and not opened_on:
             opened_on = datetime.fromtimestamp(
                 int(data["effective_at_ms"]) / 1000

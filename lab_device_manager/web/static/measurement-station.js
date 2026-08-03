@@ -1,10 +1,18 @@
 const stationById = id => document.getElementById(id);
 let stationState = {experiments:[],viscometers:[],reservations:[]};
+let stationSession = null;
 
 async function stationApi(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
   const response = await fetch(url, {
     ...options,
-    headers:{"Content-Type":"application/json",...(options.headers || {})}
+    headers:{
+      "Content-Type":"application/json",
+      ...(!["GET","HEAD","OPTIONS"].includes(method)
+        ? {"X-CSRF-Token":stationSession?.csrf_token || ""}
+        : {}),
+      ...(options.headers || {})
+    }
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "请求失败");
@@ -26,15 +34,20 @@ function renderStation() {
   stationState.experiments.forEach(experiment => {
     const card = document.createElement("article");
     card.className = "card";
-    card.innerHTML = `<strong>${experiment.batch_id}</strong>
-      <p class="muted">${experiment.membrane_system} · 操作员 ${experiment.operator}</p>
-      <p class="${active?.experiment_id === experiment.id ? "busy" : "ok"}">${
-        active?.experiment_id === experiment.id ? "当前正在测量" : "等待测量"
-      }</p>`;
+    const batch = document.createElement("strong");
+    batch.textContent = experiment.batch_id;
+    const meta = document.createElement("p");
+    meta.className = "muted";
+    meta.textContent = `${experiment.membrane_system} · 操作员 ${experiment.operator}`;
+    const status = document.createElement("p");
+    status.className = active?.experiment_id === experiment.id ? "busy" : "ok";
+    status.textContent = active?.experiment_id === experiment.id
+      ? "当前正在测量"
+      : "等待测量";
     const open = document.createElement("a");
     open.href = `/experiments/${experiment.id}`;
     open.textContent = "打开批次";
-    card.appendChild(open);
+    card.append(batch, meta, status, open);
     box.appendChild(card);
   });
   if (!stationState.experiments.length) {
@@ -83,6 +96,11 @@ stationById("cameraScanManualSubmit").addEventListener(
   "click", () => PuricoreScanner.submitManual()
 );
 stationById("stationRefresh").addEventListener("click", loadStation);
-loadStation().catch(error =>
-  stationById("stationStatus").textContent = error.message
-);
+stationApi("/api/session")
+  .then(session => {
+    stationSession = session;
+    return loadStation();
+  })
+  .catch(error =>
+    stationById("stationStatus").textContent = error.message
+  );

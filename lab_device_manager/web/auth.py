@@ -54,9 +54,13 @@ class AuthManager:
         self.blueprint = Blueprint("auth", __name__)
         self._failed_logins: dict[tuple[str, str], list[float]] = {}
         self._failed_login_lock = threading.Lock()
-        initial_password = os.environ.get(
-            "LAB_INITIAL_ADMIN_PASSWORD", "admin"
+        configured_initial_password = os.environ.get(
+            "LAB_INITIAL_ADMIN_PASSWORD"
         )
+        self._using_insecure_initial_password = (
+            configured_initial_password is None
+        )
+        initial_password = configured_initial_password or "admin"
         repo.accounts.ensure_initial_admin(
             generate_password_hash(initial_password)
         )
@@ -362,6 +366,19 @@ class AuthManager:
             return jsonify(
                 {"ok": False, "error": "invalid_credentials"}
             ), 401
+        if (
+            self._using_insecure_initial_password
+            and user["username"] == "admin"
+            and user["must_change_password"]
+            and request.remote_addr not in {"127.0.0.1", "::1"}
+        ):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "initial_setup_local_only",
+                    "message": "首次管理员密码只能在服务器本机修改",
+                }
+            ), 403
         self._clear_login_failures(key)
         session.clear()
         session.permanent = True

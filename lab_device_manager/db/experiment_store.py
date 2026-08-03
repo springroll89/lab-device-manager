@@ -237,6 +237,16 @@ class ExperimentStore:
                     "该实验已经产生库存流水，不能直接删除；"
                     "请先核对并处理库存记录"
                 )
+            waste_count = conn.execute(
+                """SELECT COUNT(*) FROM hazardous_waste_container
+                   WHERE source_experiment_id=?""",
+                (experiment_id,),
+            ).fetchone()[0]
+            if waste_count:
+                raise RuntimeError(
+                    "该实验已经产生危废记录，不能直接删除；"
+                    "请先完成危废台账核对"
+                )
 
             conn.execute(
                 """DELETE FROM label_print_job
@@ -384,8 +394,15 @@ class ExperimentStore:
         actor_user_id: Optional[int],
         now_ms: int,
         lease_ms: int = 300_000,
+        *,
+        connection=None,
     ) -> dict:
-        with self.transaction() as conn:
+        context = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with context as conn:
             conn.execute(
                 """UPDATE device_reservation
                    SET status='expired', released_at_ms=?
@@ -443,17 +460,26 @@ class ExperimentStore:
         return dict(row)
 
     def release_measurement_device(
-        self, experiment_id: int, device_id: int, released_at_ms: int
+        self,
+        experiment_id: int,
+        device_id: int,
+        released_at_ms: int,
+        *,
+        connection=None,
     ) -> int:
-        with self._lock:
-            cursor = self._conn.execute(
+        context = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with context as conn:
+            cursor = conn.execute(
                 """UPDATE device_reservation
                    SET status='released', released_at_ms=?
                    WHERE experiment_id=? AND device_id=?
                      AND purpose='measurement' AND status='active'""",
                 (released_at_ms, experiment_id, device_id),
             )
-            self._conn.commit()
             return cursor.rowcount
 
     def release_experiment_devices(
@@ -474,23 +500,17 @@ class ExperimentStore:
         experiment_id: Optional[int] = None,
         now_ms: Optional[int] = None,
     ) -> list[dict]:
-        where = "WHERE r.status='active'"
+        where = """WHERE r.status='active'
+                   AND (r.purpose!='measurement'
+                        OR r.expires_at_ms IS NULL
+                        OR r.expires_at_ms>?)"""
         params: list = []
+        current_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        params.append(current_ms)
         if experiment_id is not None:
             where += " AND r.experiment_id=?"
             params.append(experiment_id)
         with self._lock:
-            current_ms = (
-                int(time.time() * 1000) if now_ms is None else now_ms
-            )
-            self._conn.execute(
-                """UPDATE device_reservation
-                   SET status='expired', released_at_ms=?
-                   WHERE purpose='measurement' AND status='active'
-                     AND expires_at_ms IS NOT NULL AND expires_at_ms<=?""",
-                (current_ms, current_ms),
-            )
-            self._conn.commit()
             rows = self._conn.execute(
                 f"""SELECT r.*, e.batch_id, d.name AS device_name,
                            d.alias AS device_alias
@@ -819,7 +839,7 @@ class ExperimentStore:
                 ),
             )
             new_version = expected_version + 1
-            conn.execute(
+            updated = conn.execute(
                 """UPDATE experiment SET current_step_code=?, row_version=?,
                      updated_at_ms=? WHERE id=? AND row_version=?""",
                 (
@@ -830,6 +850,8 @@ class ExperimentStore:
                     expected_version,
                 ),
             )
+            if updated.rowcount != 1:
+                raise RuntimeError("row version conflict")
             self.add_experiment_event(
                 experiment_id, event, step_row["id"], connection=conn
             )
@@ -855,9 +877,7 @@ class ExperimentStore:
                     step_row["id"],
                     connection=conn,
                 )
-            for material_index, material in enumerate(
-                materials or [], start=1
-            ):
+            for material in materials or []:
                 container = None
                 container_id = material.get("material_container_id")
                 if container_id is not None:
@@ -962,12 +982,17 @@ class ExperimentStore:
                     ),
                 )
                 if container is not None:
+                    material_identity = (
+                        str(container_id)
+                        if container_id is not None
+                        else str(container["container_code"])
+                    )
                     self.inventory.record_movement(
                         container_id,
                         {
                             "client_event_id": (
                                 f"{event['client_event_id']}:"
-                                f"material:{material_index}"
+                                f"material:{material_identity}"
                             ),
                             "action": "experiment_used",
                             "quantity": material["actual_value"],
@@ -1052,8 +1077,15 @@ class ExperimentStore:
         data: dict,
         step_instance_id: Optional[int],
         event: Optional[dict] = None,
+        *,
+        connection=None,
     ) -> dict:
-        with self.transaction() as conn:
+        context = (
+            nullcontext(connection)
+            if connection is not None
+            else self.transaction()
+        )
+        with context as conn:
             existing = conn.execute(
                 "SELECT * FROM measurement WHERE client_event_id=?",
                 (data["client_event_id"],),

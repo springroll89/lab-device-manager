@@ -31,6 +31,9 @@ class Repository:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._lock = threading.RLock()
         self._conn.execute("PRAGMA foreign_keys=ON")
+        if db_path != ":memory:":
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")   # ms — wait+retry on SQLITE_BUSY before erroring (multi-device write contention)
         self._conn.row_factory = sqlite3.Row
         if existing_database:
@@ -240,45 +243,55 @@ class Repository:
             params.append(1 if tagged else 0)
         sql = f"SELECT * FROM run WHERE {' AND '.join(where)} ORDER BY started_ms DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        rows = self._conn.execute(sql, params).fetchall()
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_run(r) for r in rows]
 
     def list_runs_for_device(self, device_id: int, limit: int = 50) -> list:
         """Runs for ONE device only — used by /api/devices/<id> so a device
         detail page never leaks another device's runs."""
-        rows = self._conn.execute(
-            "SELECT * FROM run WHERE device_id=? ORDER BY started_ms DESC LIMIT ?",
-            (device_id, limit)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM run WHERE device_id=? ORDER BY started_ms DESC LIMIT ?",
+                (device_id, limit)).fetchall()
         return [_row_to_run(r) for r in rows]
 
     def get_run(self, run_id: int) -> Optional[Run]:
-        row = self._conn.execute("SELECT * FROM run WHERE id=?", (run_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM run WHERE id=?", (run_id,)
+            ).fetchone()
         return _row_to_run(row) if row else None
 
     def list_samples_for_run(self, run_id: int, limit: int = 10000) -> list:
-        rows = self._conn.execute(
-            "SELECT * FROM sample WHERE run_id=? ORDER BY ts_ms ASC LIMIT ?",
-            (run_id, limit)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM sample WHERE run_id=? ORDER BY ts_ms ASC LIMIT ?",
+                (run_id, limit)).fetchall()
         return [_row_to_sample(r) for r in rows]
 
     def list_samples_for_device(self, device_id: int, limit: int = 100) -> list:
-        rows = self._conn.execute(
-            "SELECT * FROM sample WHERE device_id=? ORDER BY ts_ms DESC LIMIT ?",
-            (device_id, limit)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM sample WHERE device_id=? ORDER BY ts_ms DESC LIMIT ?",
+                (device_id, limit)).fetchall()
         return [_row_to_sample(r) for r in rows]
 
     def list_events_for_run(self, run_id: int, limit: int = 1000) -> list:
-        rows = self._conn.execute(
-            "SELECT * FROM event WHERE run_id=? ORDER BY ts_ms ASC LIMIT ?",
-            (run_id, limit)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM event WHERE run_id=? ORDER BY ts_ms ASC LIMIT ?",
+                (run_id, limit)).fetchall()
         return [EventRow(r["id"], r["device_id"], r["run_id"], r["ts_ms"],
                          r["event_type"], r["severity"], r["detail_json"]) for r in rows]
 
     def list_untagged_runs(self) -> list:
-        rows = self._conn.execute(
-            """SELECT r.* FROM run r WHERE r.tagged=0 AND r.ended_ms IS NOT NULL
-               ORDER BY r.started_ms DESC"""
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT r.* FROM run r
+                   WHERE r.tagged=0 AND r.ended_ms IS NOT NULL
+                   ORDER BY r.started_ms DESC"""
+            ).fetchall()
         return [_row_to_run(r) for r in rows]
 
     def tag_run(self, run_id: int, operator: str, project_tag: str,
@@ -301,13 +314,18 @@ class Repository:
 
     def list_recent_events(self, device_id: Optional[int] = None,
                            limit: int = 50) -> list:
-        if device_id is None:
-            rows = self._conn.execute(
-                "SELECT * FROM event ORDER BY ts_ms DESC LIMIT ?", (limit,)).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM event WHERE device_id=? ORDER BY ts_ms DESC LIMIT ?",
-                (device_id, limit)).fetchall()
+        with self._lock:
+            if device_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM event ORDER BY ts_ms DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM event
+                       WHERE device_id=? ORDER BY ts_ms DESC LIMIT ?""",
+                    (device_id, limit),
+                ).fetchall()
         return [EventRow(r["id"], r["device_id"], r["run_id"], r["ts_ms"],
                          r["event_type"], r["severity"], r["detail_json"]) for r in rows]
 
