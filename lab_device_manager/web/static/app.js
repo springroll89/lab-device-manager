@@ -8,6 +8,13 @@ const STATE_LABELS = {
   alarm: "异常",
   offline: "离线",
 };
+const COMMUNICATION_LABELS = {
+  communicating: "通讯正常",
+  data_interrupted: "数据中断",
+  gateway_offline: "网关离线",
+  instrument_unresponsive: "仪器无响应",
+  communication_error: "通讯异常",
+};
 
 function fmtValue(value, unit, decimals = 1) {
   const number = Number(value);
@@ -82,10 +89,43 @@ function buildDeviceCard(dev, latest, metrics) {
   const name = document.createElement("div");
   name.className = "name";
   name.textContent = dev.alias || dev.name;
-  const state = document.createElement("div");
-  state.className = `card-state s-${latest.state || "offline"}`;
-  state.textContent = STATE_LABELS[latest.state] || latest.state || STATE_LABELS.offline;
-  head.append(name, state);
+  const communication = dev.communication || {
+    code: "gateway_offline",
+    label: COMMUNICATION_LABELS.gateway_offline,
+  };
+  const communicationBadge = document.createElement("div");
+  communicationBadge.className =
+    `communication-badge comm-${communication.code}`;
+  communicationBadge.textContent = communication.label
+    || COMMUNICATION_LABELS[communication.code]
+    || COMMUNICATION_LABELS.communication_error;
+  head.append(name, communicationBadge);
+
+  const statusGrid = document.createElement("div");
+  statusGrid.className = "card-status-grid";
+  const communicationRow = document.createElement("div");
+  communicationRow.className = "card-status-row";
+  const communicationLabel = document.createElement("span");
+  communicationLabel.textContent = "通讯状态";
+  const communicationValue = document.createElement("strong");
+  communicationValue.className = `comm-${communication.code}`;
+  communicationValue.textContent = communicationBadge.textContent;
+  communicationRow.append(communicationLabel, communicationValue);
+
+  const operationRow = document.createElement("div");
+  operationRow.className = "card-status-row";
+  const operationLabel = document.createElement("span");
+  operationLabel.textContent = "运行状态";
+  const operationValue = document.createElement("strong");
+  const operationKnown = communication.code === "communicating";
+  operationValue.className = operationKnown
+    ? `s-${latest.state || "stopped"}`
+    : "s-offline";
+  operationValue.textContent = operationKnown
+    ? (STATE_LABELS[latest.state] || latest.state || "待机")
+    : "状态未知";
+  operationRow.append(operationLabel, operationValue);
+  statusGrid.append(communicationRow, operationRow);
 
   const metricGrid = document.createElement("div");
   metricGrid.className = "card-metrics";
@@ -107,7 +147,7 @@ function buildDeviceCard(dev, latest, metrics) {
   const updated = document.createElement("span");
   updated.textContent = `更新 ${fmtTs(latest.ts_ms)}`;
   footer.append(mode, updated);
-  card.append(head, metricGrid, footer);
+  card.append(head, statusGrid, metricGrid, footer);
   return card;
 }
 

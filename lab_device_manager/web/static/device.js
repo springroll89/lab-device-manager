@@ -11,6 +11,13 @@ const STATE_LABELS = {
   alarm: "异常",
   offline: "离线",
 };
+const COMMUNICATION_LABELS = {
+  communicating: "通讯正常",
+  data_interrupted: "数据中断",
+  gateway_offline: "网关离线",
+  instrument_unresponsive: "仪器无响应",
+  communication_error: "通讯异常",
+};
 
 // device id comes from the URL path: /device/<id>
 const DEVICE_ID = Number(location.pathname.split("/").pop());
@@ -32,7 +39,6 @@ function fmtValue(value, unit, decimals = 1) {
 function deviceReadings(dev, latest, metrics) {
   if (dev.type === "stirrer") {
     return [
-      ["通讯状态", STATE_LABELS[latest.state] || latest.state || STATE_LABELS.offline, "state"],
       ["实际温度", fmtValue(latest.temp_c, "℃")],
       ["实际转速", fmtValue(metrics.speed ?? latest.flow_rpm, "rpm", 0)],
       ["设定转速", fmtValue(metrics.set_speed, "rpm", 0)],
@@ -40,36 +46,56 @@ function deviceReadings(dev, latest, metrics) {
   }
   if (dev.type === "viscometer") {
     return [
-      ["通讯状态", STATE_LABELS[latest.state] || latest.state || STATE_LABELS.offline, "state"],
       ["粘度", fmtValue(metrics.viscosity_mPas, "mPa·s", 2)],
       ["样品温度", fmtValue(latest.temp_c, "℃")],
       ["扭矩", fmtValue(metrics.torque_pct, "%")],
     ];
   }
   return [
-    ["通讯状态", STATE_LABELS[latest.state] || latest.state || STATE_LABELS.offline, "state"],
     ["加酸速率", fmtValue(metrics.inject_rate, "mL/min", 2)],
     ["累计加入量", fmtValue(latest.acc_volume, latest.acc_unit || "mL", 2)],
     ["运行进度", fmtValue(latest.progress_pct, "%")],
   ];
 }
 
-function renderStatus(dev, latest) {
+function renderStatus(dev, latest, communication) {
   const box = $("status"); box.textContent = "";
   const L = latest || {};
   const M = L.metrics || {};
-  for (const [label, value, kind] of deviceReadings(dev, L, M)) {
+  const comm = communication || {
+    code: "gateway_offline",
+    label: COMMUNICATION_LABELS.gateway_offline,
+  };
+  const operationKnown = comm.code === "communicating";
+  const readings = [
+    ["通讯状态", comm.label || COMMUNICATION_LABELS[comm.code], "communication"],
+    [
+      "运行状态",
+      operationKnown
+        ? (STATE_LABELS[L.state] || L.state || "待机")
+        : "状态未知",
+      operationKnown ? "state" : "unknown",
+    ],
+    ...deviceReadings(dev, L, M),
+  ];
+  for (const [label, value, kind] of readings) {
     const card = document.createElement("div");
     card.className = "card reading-card";
     const key = document.createElement("div");
     key.className = "k";
     key.textContent = label;
     const reading = document.createElement("div");
-    reading.className = `v${kind === "state" ? ` s-${L.state || "offline"}` : ""}`;
+    reading.className = kind === "communication"
+      ? `v comm-${comm.code}`
+      : `v${kind === "state" ? ` s-${L.state || "stopped"}` : kind === "unknown" ? " s-offline" : ""}`;
     reading.textContent = value;
     const updated = document.createElement("div");
     updated.className = "reading-updated";
-    updated.textContent = kind === "state" ? `更新 ${fmtTs(L.ts_ms)}` : (L.work_mode || dev.type || "设备读数");
+    updated.textContent = kind === "communication"
+      ? (comm.detail || `更新 ${fmtTs(comm.updated_at_ms)}`)
+      : kind === "state" || kind === "unknown"
+        ? `更新 ${fmtTs(L.ts_ms)}`
+        : (L.work_mode || dev.type || "设备读数");
     card.append(key, reading, updated);
     box.appendChild(card);
   }
@@ -173,7 +199,7 @@ async function load() {
   } catch (e) { return; }
   const dev = data.device || { id: DEVICE_ID };
   $("title").textContent = dev.alias || dev.name || ("设备 " + DEVICE_ID);
-  renderStatus(dev, data.latest);
+  renderStatus(dev, data.latest, data.communication);
   renderConfig(dev, data.latest, data.runs);
   renderLifetime(dev, data.latest, data.runs);
   renderRuns(data.runs);

@@ -1969,7 +1969,7 @@ function renderEnvironmentStep(form) {
   const status = document.createElement("div");
   status.className = "field full confirm-item";
   const devices = state.available_devices || [];
-  const online = devices.filter(item => item.latest && item.latest.state !== "offline").length;
+  const online = devices.filter(deviceReadingIsFresh).length;
   status.innerHTML = `<strong>设备状态已自动记录</strong><span>${online}/${devices.length} 台在线</span>`;
   form.appendChild(status);
   appendCompleteButton(form, "确认环境与设备，进入下一步");

@@ -4,7 +4,7 @@ import webbrowser
 
 from lab_device_manager.config import load_config
 from lab_device_manager.db.repository import Repository
-from lab_device_manager.runtime.engine import Engine, serial_adapter_factory
+from lab_device_manager.runtime.engine import Engine, device_adapter_factory
 from lab_device_manager.web.app import create_app
 
 
@@ -12,7 +12,7 @@ def main():  # pragma: no cover - wiring + server lifecycle
     cfg = load_config()
     repo = Repository(cfg.db_path)
     eng = Engine(repo, list(cfg.devices), cfg.sample_interval_ms / 1000.0,
-                 adapter_factory=serial_adapter_factory)
+                 adapter_factory=device_adapter_factory)
     eng.start()
     app = create_app(
         eng,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import socket
 import serial
 from typing import Protocol
 
@@ -74,6 +75,106 @@ class Transport(Protocol):
     def write(self, data: bytes) -> None: ...
     def read_wait(self, timeout_s: float) -> bytes: ...
     def flush(self) -> None: ...
+
+
+class GatewayUnavailableError(ConnectionError):
+    """The serial gateway or its TCP channel cannot currently be reached."""
+
+    communication_status = "gateway_offline"
+
+
+class TcpTransport:
+    """Raw TCP transport for a serial server transparent-transmission port.
+
+    Connections are opened lazily and retried on the next sampling cycle. This
+    lets a device recover automatically after the gateway or cable comes back.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        connect_timeout: float = 0.5,
+    ):
+        self.host = host
+        self.port = int(port)
+        self.connect_timeout = float(connect_timeout)
+        self._sock = None
+        self._closed = True
+
+    def open(self) -> None:
+        self._closed = False
+
+    def _disconnect(self) -> None:
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _ensure_connected(self):
+        if self._closed:
+            raise GatewayUnavailableError("TCP transport is closed")
+        if self._sock is not None:
+            return self._sock
+        try:
+            self._sock = socket.create_connection(
+                (self.host, self.port), self.connect_timeout
+            )
+        except OSError as exc:
+            raise GatewayUnavailableError(
+                f"cannot connect to {self.host}:{self.port}: {exc}"
+            ) from exc
+        return self._sock
+
+    def write(self, data: bytes) -> None:
+        sock = self._ensure_connected()
+        try:
+            sock.sendall(data)
+        except OSError as exc:
+            self._disconnect()
+            raise GatewayUnavailableError(
+                f"TCP channel {self.host}:{self.port} write failed: {exc}"
+            ) from exc
+
+    def read_wait(self, timeout_s: float) -> bytes:
+        sock = self._ensure_connected()
+        try:
+            sock.settimeout(max(0.0, float(timeout_s)))
+            data = sock.recv(4096)
+        except (socket.timeout, BlockingIOError):
+            return b""
+        except OSError as exc:
+            self._disconnect()
+            raise GatewayUnavailableError(
+                f"TCP channel {self.host}:{self.port} read failed: {exc}"
+            ) from exc
+        if not data:
+            self._disconnect()
+            raise GatewayUnavailableError(
+                f"TCP channel {self.host}:{self.port} was closed"
+            )
+        return data
+
+    def flush(self) -> None:
+        if self._sock is None:
+            return
+        try:
+            self._sock.settimeout(0.0)
+            while self._sock.recv(4096):
+                pass
+        except (socket.timeout, BlockingIOError):
+            return
+        except OSError as exc:
+            self._disconnect()
+            raise GatewayUnavailableError(
+                f"TCP channel {self.host}:{self.port} flush failed: {exc}"
+            ) from exc
+
+    def close(self) -> None:
+        self._closed = True
+        self._disconnect()
 
 
 class ModbusClient:
