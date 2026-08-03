@@ -19,6 +19,9 @@ def main():  # pragma: no cover - wiring + server lifecycle
         repo,
         secret_key=cfg.secret_key,
         public_base_url=cfg.public_base_url,
+        topology_collector_name=cfg.topology_collector_name,
+        topology_switch_name=cfg.topology_switch_name,
+        topology_switch_model=cfg.topology_switch_model,
     )
     try:
         if cfg.auto_open_browser:

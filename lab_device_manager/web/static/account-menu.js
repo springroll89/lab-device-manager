@@ -60,6 +60,13 @@
       addMenuLink(panel, "/accounts", "账号管理");
     }
 
+    const themeButton = document.createElement("button");
+    themeButton.className = "account-menu-item account-menu-theme";
+    themeButton.type = "button";
+    themeButton.dataset.themeToggle = "";
+    panel.appendChild(themeButton);
+    window.PuricoreTheme?.enhanceToggle(themeButton);
+
     const logoutForm = document.createElement("form");
     logoutForm.method = "post";
     logoutForm.action = "/logout";

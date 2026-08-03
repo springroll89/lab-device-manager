@@ -26,6 +26,9 @@ def test_loads_tcp_device_channel(tmp_path):
         transport = "tcp"
         host = "192.168.1.125"
         tcp_port = 4002
+        gateway_name = "UT-6804-01"
+        gateway_model = "UT-6804"
+        gateway_port = 2
     """), encoding="utf-8")
 
     cfg = load_config(str(p))
@@ -33,6 +36,9 @@ def test_loads_tcp_device_channel(tmp_path):
     assert cfg.devices[0].transport == "tcp"
     assert cfg.devices[0].host == "192.168.1.125"
     assert cfg.devices[0].tcp_port == 4002
+    assert cfg.devices[0].gateway_name == "UT-6804-01"
+    assert cfg.devices[0].gateway_model == "UT-6804"
+    assert cfg.devices[0].gateway_port == 2
 
 
 def test_rejects_tcp_device_without_endpoint(tmp_path):

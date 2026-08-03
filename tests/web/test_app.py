@@ -70,6 +70,155 @@ def test_status_separates_instrument_response_from_operating_state(tmp_path):
     assert device["latest"]["state"] == "offline"
 
 
+def test_status_groups_tcp_devices_into_gateway_topology(tmp_path):
+    repo = Repository(":memory:")
+    pump_id = repo.upsert_device("pump-1", "tyd02", alias="注射泵")
+    viscometer_id = repo.upsert_device(
+        "viscometer-1", "viscometer", alias="粘度计"
+    )
+    sensor_id = repo.upsert_device("sensor-1", "whd46", alias="温湿度")
+    engine = StaticEngine(
+        {
+            pump_id: _snap("running"),
+            viscometer_id: offline_snapshot(
+                "viscometer",
+                "no instrument response",
+                communication_status="instrument_unresponsive",
+            ),
+            sensor_id: offline_snapshot(
+                "sensor",
+                "serial port unavailable",
+                communication_status="communication_error",
+            ),
+        },
+        {
+            pump_id: DeviceConfig(
+                name="pump-1",
+                type="tyd02",
+                alias="注射泵",
+                transport="tcp",
+                host="192.168.1.125",
+                tcp_port=4002,
+                gateway_name="UT-6804-01",
+                gateway_model="UT-6804",
+                gateway_port=2,
+            ),
+            viscometer_id: DeviceConfig(
+                name="viscometer-1",
+                type="viscometer",
+                alias="粘度计",
+                transport="tcp",
+                host="192.168.1.125",
+                tcp_port=4001,
+                gateway_name="UT-6804-01",
+                gateway_model="UT-6804",
+                gateway_port=1,
+            ),
+            sensor_id: DeviceConfig(
+                name="sensor-1",
+                type="whd46",
+                alias="温湿度",
+                serial_port="/dev/cu.sensor",
+            ),
+        },
+    )
+    app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
+
+    data = app.test_client().get("/api/status").get_json()
+
+    assert len(data["topology"]["gateways"]) == 1
+    gateway = data["topology"]["gateways"][0]
+    assert gateway["host"] == "192.168.1.125"
+    assert gateway["name"] == "UT-6804-01"
+    assert gateway["model"] == "UT-6804"
+    assert gateway["status"]["code"] == "degraded"
+    assert gateway["device_ids"] == [viscometer_id, pump_id]
+    assert data["topology"]["direct_device_ids"] == [sensor_id]
+    by_id = {item["id"]: item for item in data["devices"]}
+    assert by_id[pump_id]["connection"] == {
+        "transport": "tcp",
+        "host": "192.168.1.125",
+        "tcp_port": 4002,
+        "serial_port": "",
+        "gateway_name": "UT-6804-01",
+        "gateway_model": "UT-6804",
+        "gateway_port": 2,
+    }
+
+
+def test_dashboard_exposes_topology_and_list_views(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    page = client.get("/static/index.html").data
+    script = client.get("/static/app.js").data
+    theme = client.get("/static/puricore-theme.css").data
+
+    assert b'id="topologyMode"' in page
+    assert b'id="listMode"' in page
+    assert b'id="topologyGraph"' in page
+    assert b'id="deviceListView"' in page
+    assert b"buildTopology" in script
+    assert b"localStorage" in script
+    assert b"innerHTML" not in script
+    assert b".topology-gateway" in theme
+    assert b".topology-device" in theme
+
+
+def test_all_pages_share_light_dark_theme_switch(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+    page_names = [
+        "accounts.html",
+        "change-password.html",
+        "device.html",
+        "experiment.html",
+        "hazardous-waste.html",
+        "index.html",
+        "login.html",
+        "materials.html",
+        "measurement-station.html",
+        "run.html",
+        "sensor.html",
+    ]
+
+    for page_name in page_names:
+        page = client.get(f"/static/{page_name}").data
+        assert b'/static/theme.js' in page, page_name
+        assert page.index(b'/static/theme.js') < page.index(
+            b'/static/puricore-theme.css'
+        ), page_name
+
+    script = client.get("/static/theme.js").data
+    theme = client.get("/static/puricore-theme.css").data
+    account_menu = client.get("/static/account-menu.js").data
+    assert b"localStorage" in script
+    assert b"data-theme" in script
+    assert "浅色模式".encode() in script
+    assert "深色模式".encode() in script
+    assert b"theme-toggle-floating" in script
+    assert b"PuricoreTheme" in account_menu
+    assert b"color-scheme: light" in theme
+    assert b'html[data-theme="dark"]' in theme
+
+
+def test_light_theme_uses_light_brand_asset_and_dashboard_has_no_env_badge(
+    tmp_path,
+):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    dashboard = client.get("/static/index.html").data
+    theme_script = client.get("/static/theme.js").data
+    light_logo = client.get("/static/logo-light.png")
+
+    assert light_logo.status_code == 200
+    assert light_logo.mimetype == "image/png"
+    assert b"logo-light.png" in theme_script
+    assert "本地实验室".encode() not in dashboard
+
+
 def test_runs_and_tag(tmp_path):
     app, repo, did = _app(tmp_path)
     rid = repo.open_run(did, 1, 1751000000_000, {})

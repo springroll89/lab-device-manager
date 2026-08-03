@@ -11,6 +11,9 @@ class DeviceConfig:
     serial_port: str = ""
     host: str = ""
     tcp_port: int = 0
+    gateway_name: str = ""
+    gateway_model: str = ""
+    gateway_port: int = 0
     connect_timeout_s: float = 0.5
     baudrate: int = 9600
     parity: str = "EVEN"

@@ -15,6 +15,13 @@ const COMMUNICATION_LABELS = {
   instrument_unresponsive: "仪器无响应",
   communication_error: "通讯异常",
 };
+const DEVICE_TYPE_LABELS = {
+  tyd02: "注射泵",
+  stirrer: "搅拌器",
+  viscometer: "粘度计",
+  whd46: "温湿度控制器",
+};
+const DASHBOARD_VIEW_KEY = "puricore-dashboard-view";
 let dashboardSession = null;
 
 async function dashboardJson(url, options = {}) {
@@ -34,6 +41,212 @@ function average(values) {
   const valid = values.map(Number).filter(Number.isFinite);
   if (!valid.length) return null;
   return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+function topologyTone(code) {
+  if (["communicating", "online"].includes(code)) return "online";
+  if (["data_interrupted", "degraded"].includes(code)) return "warning";
+  if (["instrument_unresponsive", "communication_error"].includes(code)) {
+    return "error";
+  }
+  return "offline";
+}
+
+function element(tag, className = "", text = "") {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== "") node.textContent = text;
+  return node;
+}
+
+function setDashboardView(view, persist = true) {
+  const selected = view === "list" ? "list" : "topology";
+  $("topologyView").hidden = selected !== "topology";
+  $("deviceListView").hidden = selected !== "list";
+  $("topologyMode").setAttribute(
+    "aria-selected", String(selected === "topology")
+  );
+  $("listMode").setAttribute("aria-selected", String(selected === "list"));
+  if (persist) {
+    try { localStorage.setItem(DASHBOARD_VIEW_KEY, selected); } catch (_) {}
+  }
+}
+
+function wireDashboardView() {
+  let preferred = "topology";
+  try { preferred = localStorage.getItem(DASHBOARD_VIEW_KEY) || preferred; } catch (_) {}
+  setDashboardView(preferred, false);
+  $("topologyMode").addEventListener("click", () => setDashboardView("topology"));
+  $("listMode").addEventListener("click", () => setDashboardView("list"));
+}
+
+function topologyStatus(code, label) {
+  const tone = topologyTone(code);
+  const badge = element("span", `topology-status is-${tone}`);
+  badge.append(
+    element("i", "topology-status-dot"),
+    document.createTextNode(label || COMMUNICATION_LABELS[code] || "状态未知")
+  );
+  return badge;
+}
+
+function infrastructureNode(kind, title, subtitle, status) {
+  const node = element("div", `topology-node topology-${kind}`);
+  const icon = element("div", "topology-node-icon");
+  icon.setAttribute("aria-hidden", "true");
+  const copy = element("div", "topology-node-copy");
+  copy.append(
+    element("strong", "", title),
+    element("span", "", subtitle || "")
+  );
+  node.append(icon, copy);
+  if (status) node.append(topologyStatus(status.code, status.label));
+  return node;
+}
+
+function deviceEndpoint(device) {
+  const connection = device.connection || {};
+  if (connection.transport === "tcp") {
+    const channel = connection.gateway_port
+      ? `串口 ${connection.gateway_port} · `
+      : "";
+    return `${channel}TCP ${connection.tcp_port || "—"}`;
+  }
+  const port = String(connection.serial_port || "").split("/").pop();
+  return port ? `本机串口 · ${port}` : "本机串口待配置";
+}
+
+function buildTopologyDevice(device) {
+  const communication = device.communication || {
+    code: "gateway_offline",
+    label: "网关离线",
+  };
+  const latest = device.latest || {};
+  const metrics = latest.metrics || {};
+  const primary = dashboardMetrics(device, latest, metrics)[0] || ["实时数据", "—"];
+  const node = element(
+    "button",
+    `topology-device is-${topologyTone(communication.code)}`
+  );
+  node.type = "button";
+  node.dataset.deviceId = device.id;
+  node.setAttribute(
+    "aria-label",
+    `${device.alias || device.name}，${communication.label || "状态未知"}`
+  );
+  node.addEventListener("click", () => {
+    location.href = device.type === "whd46"
+      ? `/sensor/${device.id}`
+      : `/device/${device.id}`;
+  });
+  const header = element("div", "topology-device-head");
+  const title = element("div");
+  title.append(
+    element("strong", "", device.alias || device.name),
+    element("span", "", DEVICE_TYPE_LABELS[device.type] || device.type)
+  );
+  header.append(title, topologyStatus(communication.code, communication.label));
+  const endpoint = element("div", "topology-device-endpoint", deviceEndpoint(device));
+  const reading = element("div", "topology-device-reading");
+  reading.append(
+    element("span", "", primary[0]),
+    element("strong", "", primary[1])
+  );
+  node.append(header, endpoint, reading);
+  return node;
+}
+
+function topologyConnector(tone = "online") {
+  const connector = element("div", `topology-connector is-${tone}`);
+  connector.setAttribute("aria-hidden", "true");
+  return connector;
+}
+
+function renderTopologySummary(devices, topology) {
+  const host = $("topologySummary");
+  host.textContent = "";
+  const online = devices.filter(
+    device => device.communication?.code === "communicating"
+  ).length;
+  const abnormal = devices.length - online;
+  const values = [
+    ["设备", devices.length],
+    ["通讯正常", online],
+    ["需关注", abnormal],
+    ["TCP 网关", topology?.gateways?.length || 0],
+  ];
+  for (const [label, value] of values) {
+    const item = element("div", "topology-summary-item");
+    item.append(
+      element("span", "", label),
+      element("strong", "", String(value))
+    );
+    host.appendChild(item);
+  }
+}
+
+function buildTopology(topology, devices) {
+  const graph = $("topologyGraph");
+  graph.textContent = "";
+  const byId = new Map(devices.map(device => [device.id, device]));
+  renderTopologySummary(devices, topology);
+  if (!topology) {
+    graph.appendChild(element("p", "topology-empty", "拓扑信息暂不可用。"));
+    return;
+  }
+
+  const backbone = element("div", "topology-backbone");
+  backbone.appendChild(infrastructureNode(
+    "collector",
+    topology.collector?.name || "后台采集主机",
+    "设备采集与数据服务",
+    topology.collector?.status
+  ));
+  backbone.appendChild(topologyConnector("online"));
+  backbone.appendChild(infrastructureNode(
+    "network",
+    topology.network?.name || "实验室网络",
+    topology.network?.model || "交换与汇聚层"
+  ));
+  graph.appendChild(backbone);
+
+  const branches = element("div", "topology-branches");
+  for (const gateway of topology.gateways || []) {
+    const tone = topologyTone(gateway.status?.code);
+    const branch = element("section", `topology-gateway is-${tone}`);
+    branch.appendChild(topologyConnector(tone));
+    branch.appendChild(infrastructureNode(
+      "gateway",
+      gateway.name,
+      `${gateway.model || "串口网关"} · ${gateway.host}`,
+      gateway.status
+    ));
+    const deviceGrid = element("div", "topology-device-grid");
+    for (const deviceId of gateway.device_ids || []) {
+      const device = byId.get(deviceId);
+      if (device) deviceGrid.appendChild(buildTopologyDevice(device));
+    }
+    branch.appendChild(deviceGrid);
+    branches.appendChild(branch);
+  }
+
+  const directDevices = (topology.direct_device_ids || [])
+    .map(deviceId => byId.get(deviceId))
+    .filter(Boolean);
+  if (directDevices.length) {
+    const branch = element("section", "topology-gateway topology-direct is-warning");
+    branch.appendChild(topologyConnector("warning"));
+    branch.appendChild(infrastructureNode(
+      "gateway", "本机串口直连", "未经过 TCP 串口网关"
+    ));
+    const deviceGrid = element("div", "topology-device-grid");
+    directDevices.forEach(device => {
+      deviceGrid.appendChild(buildTopologyDevice(device));
+    });
+    branch.appendChild(deviceGrid);
+    branches.appendChild(branch);
+  }
+  graph.appendChild(branches);
 }
 
 function dashboardMetrics(dev, latest, metrics) {
@@ -164,7 +377,9 @@ async function pollStatus() {
   try { d = await dashboardJson("/api/status"); } catch (e) { return; }
   const box = $("devices");
   box.textContent = "";
-  for (const dev of (d.devices || [])) {
+  const devices = d.devices || [];
+  buildTopology(d.topology, devices);
+  for (const dev of devices) {
     const L = dev.latest || {};
     const M = L.metrics || {};
     box.appendChild(buildDeviceCard(dev, L, M));
@@ -249,6 +464,7 @@ async function repeatAfter(task, delayMs) {
 }
 
 async function startDashboard() {
+  wireDashboardView();
   try {
     dashboardSession = await dashboardJson("/api/session");
   } catch (_) {

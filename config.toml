@@ -9,6 +9,11 @@ tls_keyfile        = ""
 auto_open_browser  = true
 # secret_key is auto-generated in data/.session_secret if omitted.
 
+[topology]
+collector_name = "后台 Mac 采集服务"
+switch_name    = "实验室网络汇聚"
+switch_model   = "UT-6408"
+
 [[devices]]
 name        = "pump-1"
 type        = "tyd02"
@@ -16,6 +21,9 @@ alias       = "注射泵"
 transport   = "tcp"
 host        = "192.168.1.125"
 tcp_port    = 4002                # UT-6804 串口 2
+gateway_name = "UT-6804-01"
+gateway_model = "UT-6804"
+gateway_port = 2
 baudrate    = 9600
 parity      = "EVEN"        # 8E1
 modbus_addr = 1
@@ -30,6 +38,9 @@ alias       = "粘度计"
 transport   = "tcp"
 host        = "192.168.1.125"
 tcp_port    = 4001                # UT-6804 串口 1
+gateway_name = "UT-6804-01"
+gateway_model = "UT-6804"
+gateway_port = 1
 baudrate    = 9600
 parity      = "NONE"        # 8N1（粘度计假设）
 
@@ -42,6 +53,9 @@ alias       = "搅拌器1"
 transport   = "tcp"
 host        = "192.168.1.125"
 tcp_port    = 4003                # UT-6804 串口 3
+gateway_name = "UT-6804-01"
+gateway_model = "UT-6804"
+gateway_port = 3
 baudrate    = 9600
 parity      = "NONE"
 modbus_addr = 1

@@ -4,19 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>粘度测量工位</title>
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/puricore-theme.css">
   <style>
-    body{margin:0;background:#081116;color:#ecf5f4;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
-    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;border-bottom:1px solid #24404b}
+    body{margin:0;background:var(--pc-bg);color:var(--pc-text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;border-bottom:1px solid var(--pc-line);background:var(--pc-header-bg);backdrop-filter:blur(16px)}
     main{width:min(1100px,100%);margin:auto;padding:28px 18px}
     .toolbar,.cards{display:flex;gap:12px;flex-wrap:wrap}.cards{margin-top:22px}
-    button,.toolbar a{min-height:46px;padding:11px 18px;border-radius:12px;border:1px solid #31505c;background:#122731;color:#eef;text-decoration:none}
-    .primary{background:#69dec0;color:#071712;border:0;font-weight:700}
-    .card{flex:1 1 290px;padding:18px;border:1px solid #24404b;border-radius:16px;background:#102029}
-    .muted{color:#8ca7aa}.ok{color:#69dec0}.busy{color:#f5bd4f}
-    dialog{width:min(680px,calc(100% - 24px));border:1px solid #31505c;border-radius:18px;background:#102029;color:#fff;padding:20px}
+    button,.toolbar a{min-height:46px;padding:11px 18px;border-radius:12px;border:1px solid var(--pc-line);background:var(--pc-surface-2);color:var(--pc-text);text-decoration:none}
+    .primary{background:var(--pc-accent);color:var(--pc-on-accent);border:0;font-weight:700}
+    .card{flex:1 1 290px;padding:18px;border:1px solid var(--pc-line);border-radius:16px;background:var(--pc-surface)}
+    .muted{color:var(--pc-muted)}.ok{color:var(--pc-accent)}.busy{color:var(--pc-amber)}
+    dialog{width:min(680px,calc(100% - 24px));border:1px solid var(--pc-line);border-radius:18px;background:var(--pc-surface);color:var(--pc-text);padding:20px}
     video{width:100%;min-height:280px;background:#020709;border-radius:14px;object-fit:cover}
-    input{width:100%;margin-top:12px;padding:13px;border-radius:10px;border:1px solid #31505c;background:#081116;color:#fff}
+    input{width:100%;margin-top:12px;padding:13px;border-radius:10px;border:1px solid var(--pc-line);background:var(--pc-input);color:var(--pc-text)}
   </style>
 </head>
 <body class="page-measurement-station">

@@ -104,6 +104,94 @@ def _snap_to_dict(snap):
     }
 
 
+def _connection_metadata(config) -> dict:
+    if config is None:
+        return {
+            "transport": "unknown",
+            "host": "",
+            "tcp_port": 0,
+            "serial_port": "",
+            "gateway_name": "",
+            "gateway_model": "",
+            "gateway_port": 0,
+        }
+    return {
+        "transport": config.transport,
+        "host": config.host,
+        "tcp_port": config.tcp_port,
+        "serial_port": config.serial_port,
+        "gateway_name": getattr(config, "gateway_name", ""),
+        "gateway_model": getattr(config, "gateway_model", ""),
+        "gateway_port": getattr(config, "gateway_port", 0),
+    }
+
+
+def _gateway_status(devices: list[dict]) -> dict:
+    codes = {
+        item["communication"]["code"]
+        for item in devices
+    }
+    if codes == {"communicating"}:
+        return {"code": "online", "label": "网关及设备正常"}
+    if codes == {"gateway_offline"}:
+        return {"code": "offline", "label": "网关离线"}
+    return {"code": "degraded", "label": "部分通道异常"}
+
+
+def _topology_payload(
+    devices: list[dict],
+    *,
+    collector_name: str,
+    switch_name: str,
+    switch_model: str,
+) -> dict:
+    gateway_groups: dict[str, list[dict]] = {}
+    direct_device_ids = []
+    for device in devices:
+        connection = device["connection"]
+        if connection["transport"] == "tcp" and connection["host"]:
+            gateway_groups.setdefault(connection["host"], []).append(device)
+        else:
+            direct_device_ids.append(device["id"])
+
+    gateways = []
+    for host, grouped_devices in gateway_groups.items():
+        grouped_devices.sort(
+            key=lambda item: (
+                item["connection"]["gateway_port"] or 10_000,
+                item["connection"]["tcp_port"] or 10_000,
+                item["id"],
+            )
+        )
+        connection = grouped_devices[0]["connection"]
+        gateways.append(
+            {
+                "id": f"gateway:{host}",
+                "name": connection["gateway_name"] or f"串口网关 {host}",
+                "model": connection["gateway_model"] or "串口服务器",
+                "host": host,
+                "status": _gateway_status(grouped_devices),
+                "device_ids": [item["id"] for item in grouped_devices],
+            }
+        )
+    gateways.sort(key=lambda item: (item["name"], item["host"]))
+    direct_device_ids.sort()
+    return {
+        "collector": {
+            "id": "collector",
+            "name": collector_name,
+            "status": {"code": "online", "label": "采集服务运行中"},
+        },
+        "network": {
+            "id": "network",
+            "name": switch_name,
+            "model": switch_model,
+        },
+        "gateways": gateways,
+        "direct_device_ids": direct_device_ids,
+    }
+
+
 def _run_to_dict(run):
     d = {
         "id": run.id, "device_id": run.device_id,
@@ -706,6 +794,9 @@ def create_app(
     repo,
     secret_key: str = "",
     public_base_url: str = "",
+    topology_collector_name: str = "后台采集主机",
+    topology_switch_name: str = "网络汇聚设备",
+    topology_switch_model: str = "",
 ):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.extensions["puricore_engine"] = engine
@@ -2429,11 +2520,29 @@ def create_app(
         devices = []
         for did, snap in latest.items():
             dc = dmap.get(did)
-            devices.append({"id": did, "name": dc.name if dc else str(did),
-                            "alias": dc.alias if dc else "", "type": dc.type if dc else "",
-                            "latest": _snap_to_dict(snap),
-                            "communication": communication_health(snap)})
-        return jsonify({"devices": devices})
+            devices.append(
+                {
+                    "id": did,
+                    "name": dc.name if dc else str(did),
+                    "alias": dc.alias if dc else "",
+                    "type": dc.type if dc else "",
+                    "latest": _snap_to_dict(snap),
+                    "communication": communication_health(snap),
+                    "connection": _connection_metadata(dc),
+                }
+            )
+        devices.sort(key=lambda item: item["id"])
+        return jsonify(
+            {
+                "devices": devices,
+                "topology": _topology_payload(
+                    devices,
+                    collector_name=topology_collector_name,
+                    switch_name=topology_switch_name,
+                    switch_model=topology_switch_model,
+                ),
+            }
+        )
 
     @app.get("/api/time")
     def api_time():

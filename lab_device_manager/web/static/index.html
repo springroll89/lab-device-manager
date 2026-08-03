@@ -43,6 +43,7 @@
  input,select{background:#1a1d24;border:1px solid #333;color:#e6e6e6;border-radius:6px;padding:5px 10px;outline:none}
  input:focus,select:focus{border-color:#4a5568}
 </style><!-- cache_bust=1783485148 -->
+<script src="/static/theme.js"></script>
 <link rel="stylesheet" href="/static/puricore-theme.css">
 </head>
 <body class="page-dashboard">
@@ -57,11 +58,36 @@
   <div class="header-account-group">
     <nav data-primary-nav></nav>
     <div data-account-menu></div>
-    <div class="env-badge">本地实验室</div>
   </div>
 </header>
-<h2>实时状态</h2>
-<div id="devices" class="cards"></div>
+<main class="dashboard-main">
+  <section class="device-overview" aria-labelledby="deviceOverviewTitle">
+    <div class="overview-heading">
+      <div>
+        <div class="section-kicker">NETWORK &amp; DEVICES</div>
+        <h1 id="deviceOverviewTitle">设备连接与实时状态</h1>
+        <p>查看设备接入的网关、端口和实时通讯情况。</p>
+      </div>
+      <div class="view-switch" role="tablist" aria-label="设备看板视图">
+        <button id="topologyMode" type="button" role="tab" aria-selected="true" aria-controls="topologyView">拓扑视图</button>
+        <button id="listMode" type="button" role="tab" aria-selected="false" aria-controls="deviceListView">设备列表</button>
+      </div>
+    </div>
+    <div id="topologyView" role="tabpanel" aria-labelledby="topologyMode">
+      <div id="topologySummary" class="topology-summary" aria-live="polite"></div>
+      <div id="topologyGraph" class="topology-graph" aria-live="polite"></div>
+      <div class="topology-legend" aria-label="拓扑状态说明">
+        <span><i class="legend-dot is-online"></i>通讯正常</span>
+        <span><i class="legend-dot is-warning"></i>数据中断或通道异常</span>
+        <span><i class="legend-dot is-error"></i>仪器无响应或通讯错误</span>
+        <span><i class="legend-dot is-offline"></i>网关离线</span>
+      </div>
+    </div>
+    <div id="deviceListView" role="tabpanel" aria-labelledby="listMode" hidden>
+      <div id="devices" class="cards"></div>
+    </div>
+  </section>
+</main>
 <h2>运行记录（最近 30）</h2>
 <div style="padding:0 16px 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
   <input id="fProject" placeholder="项目">

@@ -35,6 +35,9 @@ class Config:
     tls_certfile: str = ""
     tls_keyfile: str = ""
     auto_open_browser: bool = True
+    topology_collector_name: str = "后台采集主机"
+    topology_switch_name: str = "网络汇聚设备"
+    topology_switch_model: str = ""
     devices: tuple = ()   # tuple[DeviceConfig]
     secret_key: str = ""
 
@@ -55,6 +58,9 @@ def load_config(path: str | None = None) -> Config:
         transport=dev.get("transport", "serial").lower(),
         serial_port=dev.get("serial_port", ""), baudrate=dev.get("baudrate", 9600),
         host=dev.get("host", ""), tcp_port=dev.get("tcp_port", 0),
+        gateway_name=str(dev.get("gateway_name", "")).strip(),
+        gateway_model=str(dev.get("gateway_model", "")).strip(),
+        gateway_port=dev.get("gateway_port", 0),
         connect_timeout_s=dev.get("connect_timeout_s", 0.5),
         parity=dev.get("parity", "EVEN"), modbus_addr=dev.get("modbus_addr", 1),
         wordorder=dev.get("wordorder", "CDAB"), channel=dev.get("channel", 1),
@@ -69,6 +75,10 @@ def load_config(path: str | None = None) -> Config:
         ):
             raise ValueError(
                 f"config: TCP device {dev.name!r} requires host and tcp_port"
+            )
+        if not isinstance(dev.gateway_port, int) or dev.gateway_port < 0:
+            raise ValueError(
+                f"config: device {dev.name!r} gateway_port must be a nonnegative integer"
             )
     raw_secret = d.get("secret_key", "")
     secret_key = raw_secret if raw_secret else _load_or_create_secret()
@@ -97,6 +107,9 @@ def load_config(path: str | None = None) -> Config:
             raise ValueError(
                 "config: public_base_url must use https when TLS is enabled"
             )
+    topology = d.get("topology") or {}
+    if not isinstance(topology, dict):
+        raise ValueError("config: topology must be a table")
     return Config(
         db_path=d.get("db_path", "./data/lab_device_manager.db"),
         sample_interval_ms=sample_interval_ms,
@@ -106,6 +119,15 @@ def load_config(path: str | None = None) -> Config:
         tls_certfile=tls_certfile,
         tls_keyfile=tls_keyfile,
         auto_open_browser=d.get("auto_open_browser", True),
+        topology_collector_name=str(
+            topology.get("collector_name", "后台采集主机")
+        ).strip() or "后台采集主机",
+        topology_switch_name=str(
+            topology.get("switch_name", "网络汇聚设备")
+        ).strip() or "网络汇聚设备",
+        topology_switch_model=str(
+            topology.get("switch_model", "")
+        ).strip(),
         devices=devs,
         secret_key=secret_key,
     )

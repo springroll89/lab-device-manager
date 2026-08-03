@@ -15,6 +15,27 @@ function kv(k, v) {
 
 let chartInstance = null;
 
+function chartTheme() {
+  const styles = getComputedStyle(document.documentElement);
+  const token = (name) => styles.getPropertyValue(name).trim();
+  return {
+    accent: token("--pc-accent"),
+    muted: token("--pc-muted"),
+    line: token("--pc-line-soft"),
+  };
+}
+
+function refreshChartTheme() {
+  if (!chartInstance) return;
+  const colors = chartTheme();
+  chartInstance.data.datasets[0].borderColor = colors.accent;
+  for (const axis of ["x", "y"]) {
+    chartInstance.options.scales[axis].ticks.color = colors.muted;
+    chartInstance.options.scales[axis].grid.color = colors.line;
+  }
+  chartInstance.update("none");
+}
+
 function renderMeta(run) {
   const box = $("meta"); box.textContent = "";
   const card = document.createElement("div"); card.className = "card";
@@ -38,19 +59,25 @@ function renderMeta(run) {
 
 function renderChart(samples) {
   const ctx = $("flowChart").getContext("2d");
+  const colors = chartTheme();
   if (chartInstance) { chartInstance.destroy(); }
   const labels = samples.map((s) => fmtTs(s.ts_ms));
   const data = samples.map((s) => s.flow_rate == null ? 0 : s.flow_rate);
   chartInstance = new Chart(ctx, {
     type: "line",
-    data: { labels, datasets: [{ label: "流速", data, borderColor: "#6ea8ff", tension: 0.2, pointRadius: 2 }] },
+    data: { labels, datasets: [{ label: "流速", data, borderColor: colors.accent, tension: 0.2, pointRadius: 2 }] },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: { x: { ticks: { color: "#8a93a3" } }, y: { ticks: { color: "#8a93a3" } } }
+      scales: {
+        x: {grid: {color: colors.line}, ticks: {color: colors.muted}},
+        y: {grid: {color: colors.line}, ticks: {color: colors.muted}},
+      }
     }
   });
 }
+
+document.documentElement.addEventListener("puricore:themechange", refreshChartTheme);
 
 function renderEvents(events) {
   const tb = $("events").querySelector("tbody"); tb.textContent = "";
