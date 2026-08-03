@@ -1,5 +1,6 @@
 import time
-from lab_device_manager.runtime.engine import Engine
+import lab_device_manager.runtime.engine as engine_module
+from lab_device_manager.runtime.engine import Engine, device_adapter_factory
 from lab_device_manager.runtime.types import DeviceConfig
 from lab_device_manager.db.repository import Repository
 from lab_device_manager.instruments.base import StatusSnapshot
@@ -135,3 +136,40 @@ def test_engine_start_closes_run_left_open_by_previous_process():
     stale = repo.get_run(run_id)
     assert stale.ended_ms is not None
     assert stale.end_status == "interrupted_restart"
+
+
+def test_device_adapter_factory_uses_configured_tcp_channel(monkeypatch):
+    events = []
+
+    class FakeTcpTransport:
+        def __init__(self, host, port, connect_timeout):
+            events.append(("create", host, port, connect_timeout))
+
+        def open(self):
+            events.append(("open",))
+
+        def close(self):
+            events.append(("close",))
+
+    adapter = object()
+    monkeypatch.setattr(engine_module, "TcpTransport", FakeTcpTransport)
+    monkeypatch.setattr(
+        engine_module,
+        "make_adapter",
+        lambda name, transport, **_kwargs: adapter,
+    )
+    config = DeviceConfig(
+        name="pump-1",
+        type="tyd02",
+        transport="tcp",
+        host="192.168.1.125",
+        tcp_port=4002,
+        connect_timeout_s=0.3,
+    )
+
+    built, cleanup = device_adapter_factory(config)
+
+    assert built is adapter
+    assert events == [("create", "192.168.1.125", 4002, 0.3), ("open",)]
+    cleanup()
+    assert events[-1] == ("close",)

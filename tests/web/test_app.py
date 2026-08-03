@@ -6,7 +6,7 @@ from openpyxl import load_workbook
 from lab_device_manager.web.app import create_app
 from lab_device_manager.runtime.types import DeviceConfig
 from lab_device_manager.db.repository import Repository
-from lab_device_manager.instruments.base import StatusSnapshot
+from lab_device_manager.instruments.base import StatusSnapshot, offline_snapshot
 
 
 def _sample_to_dict(s):
@@ -52,6 +52,22 @@ def test_status_lists_devices(tmp_path):
     data = r.get_json()
     assert data["devices"][0]["name"] == "pump-1"
     assert data["devices"][0]["latest"]["state"] == "running"
+    assert data["devices"][0]["communication"]["code"] == "communicating"
+
+
+def test_status_separates_instrument_response_from_operating_state(tmp_path):
+    app, repo, did = _app(tmp_path)
+    app_eng = app.extensions["puricore_engine"]
+    app_eng._latest[did] = offline_snapshot(
+        "pump",
+        "no Modbus response within read_timeout",
+        communication_status="instrument_unresponsive",
+    )
+
+    device = app.test_client().get("/api/status").get_json()["devices"][0]
+
+    assert device["communication"]["label"] == "仪器无响应"
+    assert device["latest"]["state"] == "offline"
 
 
 def test_runs_and_tag(tmp_path):
@@ -414,6 +430,20 @@ def test_dashboard_uses_the_same_outer_card_style_for_every_device(tmp_path):
     assert b".card.sensor-card" not in page.data
     assert b"sensor-card" not in script.data
     assert b".page-dashboard .card.sensor-card" not in theme.data
+
+
+def test_dashboard_separates_communication_and_operating_status(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    page = client.get("/static/index.html")
+    script = client.get("/static/app.js")
+
+    assert "通讯状态".encode() in script.data
+    assert "运行状态".encode() in script.data
+    assert b"communication-badge" in script.data
+    assert b"communication.code" in script.data
+    assert b"comm-instrument_unresponsive" in page.data
 
 
 def test_account_creation_keeps_stable_form_reference(tmp_path):

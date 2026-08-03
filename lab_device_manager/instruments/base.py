@@ -32,6 +32,18 @@ class InstrumentAdapter(Protocol):
     def read_status(self) -> StatusSnapshot: ...
 
 
-def offline_snapshot(device_id: str, reason: str = "") -> StatusSnapshot:
-    return StatusSnapshot(timestamp=time.time(), state="offline",
-                          work_mode="", device_id=device_id)
+def offline_snapshot(
+    device_id: str,
+    reason: str = "",
+    communication_status: str = "communication_error",
+) -> StatusSnapshot:
+    metrics = {"communication_status": communication_status}
+    if reason:
+        metrics["communication_error"] = reason
+    return StatusSnapshot(
+        timestamp=time.time(),
+        state="offline",
+        work_mode="",
+        device_id=device_id,
+        metrics=metrics,
+    )

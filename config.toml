@@ -13,33 +13,35 @@ auto_open_browser  = true
 name        = "pump-1"
 type        = "tyd02"
 alias       = "注射泵"
-serial_port = "/dev/cu.usbserial-BG039GXP"
+transport   = "tcp"
+host        = "192.168.1.125"
+tcp_port    = 4002                # UT-6804 串口 2
 baudrate    = 9600
 parity      = "EVEN"        # 8E1
 modbus_addr = 1
 wordorder   = "CDAB"
 
 # ── 粘度计（方瑞，RS232，自定义二进制协议）──
-# RS232 转换器到货接上后，把 serial_port 改成实际端口，并用 scripts/viscometer_capture.py
-# 抓帧确认校验和/扭矩换算/帧类型（见 docs/.../项目记忆 project_viscometer）。
+# 已接到 UT-6804 串口 1；抓到实机帧后继续确认校验和、扭矩换算和帧类型。
 [[devices]]
 name        = "viscometer-1"
 type        = "viscometer"
 alias       = "粘度计"
-serial_port = "/dev/cu.usbserial-VISCO"   # 占位 —— 实际接上后替换
+transport   = "tcp"
+host        = "192.168.1.125"
+tcp_port    = 4001                # UT-6804 串口 1
 baudrate    = 9600
 parity      = "NONE"        # 8N1（粘度计假设）
 
 # ── 搅拌器（HMS-C，RS485）×5 ──
-# 串口参数(波特/校验/地址)未知 —— 接上后用 scripts/stirrer_probe.py 探测，再回填。
-# ⚠️ 多机总线：若 5 台并到同一条 RS485（一个转换器、不同 modbus_addr），当前 Engine
-#    「每设备独占一个串口」的模型不支持（会重复打开同一端口）。部署时要么每台走串口服务器
-#    独立一口（当前模型可用），要么等 Engine 加「一条总线多从机」支持。占位端口如下，皆待替换。
+# 搅拌器 1 已接到 UT-6804 串口 3；其余设备仍保留占位配置，接入后逐台改为对应 TCP 端口。
 [[devices]]
 name        = "stirrer-1"
 type        = "stirrer"
 alias       = "搅拌器1"
-serial_port = "/dev/cu.usbserial-STIR1"   # 占位
+transport   = "tcp"
+host        = "192.168.1.125"
+tcp_port    = 4003                # UT-6804 串口 3
 baudrate    = 9600
 parity      = "NONE"
 modbus_addr = 1

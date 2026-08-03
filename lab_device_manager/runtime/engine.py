@@ -6,7 +6,7 @@ import time
 from typing import Callable, Optional
 from lab_device_manager.sampler import Sampler
 from lab_device_manager.instruments.factory import make_adapter
-from lab_device_manager.modbus_io import SerialTransport
+from lab_device_manager.modbus_io import SerialTransport, TcpTransport
 from lab_device_manager.instruments.base import StatusSnapshot, offline_snapshot
 from lab_device_manager.runtime.run_detector import RunDetector
 from lab_device_manager.runtime.types import DeviceConfig
@@ -119,6 +119,7 @@ class Engine:
             self._latest[device_id] = offline_snapshot(
                 config.alias or config.name,
                 reason,
+                communication_status="gateway_offline",
             )
 
     def reconnect_device(self, device_id: int, serial_port: str) -> dict:
@@ -161,10 +162,20 @@ class Engine:
         return self._adapters.get(device_id)
 
 
-def serial_adapter_factory(dc: DeviceConfig) -> tuple:
-    """Production adapter factory: opens a SerialTransport and builds the adapter.
+def device_adapter_factory(dc: DeviceConfig) -> tuple:
+    """Open the configured serial or TCP transport and build its adapter.
+
+    TCP mode targets a serial server's transparent-transmission channel. Its
+    transport reconnects lazily so devices recover without restarting the app.
     Returns (adapter, cleanup) where cleanup closes the transport."""
-    transport = SerialTransport(dc.serial_port, dc.baudrate, dc.parity)
+    if dc.transport == "tcp":
+        transport = TcpTransport(
+            dc.host,
+            dc.tcp_port,
+            connect_timeout=dc.connect_timeout_s,
+        )
+    else:
+        transport = SerialTransport(dc.serial_port, dc.baudrate, dc.parity)
     transport.open()
     try:
         adapter = make_adapter(
@@ -177,3 +188,7 @@ def serial_adapter_factory(dc: DeviceConfig) -> tuple:
         transport.close()
         raise
     return adapter, transport.close
+
+
+# Kept for callers that still import the former production-factory name.
+serial_adapter_factory = device_adapter_factory

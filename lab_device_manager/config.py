@@ -46,10 +46,24 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError("config: use [[devices]] (array of tables), not [devices]")
     devs = tuple(DeviceConfig(
         name=dev["name"], type=dev["type"], alias=dev.get("alias", ""),
+        transport=dev.get("transport", "serial").lower(),
         serial_port=dev.get("serial_port", ""), baudrate=dev.get("baudrate", 9600),
+        host=dev.get("host", ""), tcp_port=dev.get("tcp_port", 0),
+        connect_timeout_s=dev.get("connect_timeout_s", 0.5),
         parity=dev.get("parity", "EVEN"), modbus_addr=dev.get("modbus_addr", 1),
         wordorder=dev.get("wordorder", "CDAB"), channel=dev.get("channel", 1),
     ) for dev in d.get("devices", []))
+    for dev in devs:
+        if dev.transport not in {"serial", "tcp"}:
+            raise ValueError(
+                f"config: device {dev.name!r} transport must be serial or tcp"
+            )
+        if dev.transport == "tcp" and (
+            not dev.host or not 1 <= dev.tcp_port <= 65535
+        ):
+            raise ValueError(
+                f"config: TCP device {dev.name!r} requires host and tcp_port"
+            )
     raw_secret = d.get("secret_key", "")
     secret_key = raw_secret if raw_secret else _load_or_create_secret()
     tls_certfile = str(d.get("tls_certfile", "")).strip()

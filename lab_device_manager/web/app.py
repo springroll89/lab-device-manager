@@ -47,6 +47,7 @@ from lab_device_manager.inventory.pubchem import lookup_chemical
 from lab_device_manager.inventory.regulatory_catalog import (
     lookup_hazardous_catalog,
 )
+from lab_device_manager.runtime.communication import communication_health
 from lab_device_manager.web.auth import AuthManager
 from lab_device_manager.web.barcode import (
     BarcodeImageError,
@@ -707,6 +708,7 @@ def create_app(
     public_base_url: str = "",
 ):
     app = Flask(__name__, static_folder="static", static_url_path="/static")
+    app.extensions["puricore_engine"] = engine
     app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024
     r201 = R201Service(repo)
     inventory = InventoryService(repo.inventory)
@@ -966,6 +968,7 @@ def create_app(
                     "alias": config.alias,
                     "type": config.type,
                     "latest": _snap_to_dict(snapshot) if snapshot else None,
+                    "communication": communication_health(snapshot),
                     "reservation": reservations.get(device_id),
                 }
             )
@@ -2429,7 +2432,8 @@ def create_app(
             dc = dmap.get(did)
             devices.append({"id": did, "name": dc.name if dc else str(did),
                             "alias": dc.alias if dc else "", "type": dc.type if dc else "",
-                            "latest": _snap_to_dict(snap)})
+                            "latest": _snap_to_dict(snap),
+                            "communication": communication_health(snap)})
         return jsonify({"devices": devices})
 
     @app.get("/api/time")
@@ -2679,6 +2683,7 @@ def create_app(
             "device": {"id": device_id, "name": dc.name if dc else "", "alias": dc.alias if dc else "",
                        "type": dc.type if dc else ""},
             "latest": snap_dict,
+            "communication": communication_health(snap),
             "metrics": snap_dict["metrics"] if snap_dict else {},
             "runs": [_run_to_dict(r) for r in runs],
         })

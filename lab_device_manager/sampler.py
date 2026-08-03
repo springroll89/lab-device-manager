@@ -42,7 +42,20 @@ class Sampler:
             try:
                 snap = self.adapter.read_status()
             except Exception as e:
-                snap = offline_snapshot(self._device_id or "unknown", str(e))
+                communication_status = getattr(
+                    e,
+                    "communication_status",
+                    "instrument_unresponsive"
+                    if isinstance(e, TimeoutError)
+                    else "gateway_offline"
+                    if isinstance(e, OSError)
+                    else "communication_error",
+                )
+                snap = offline_snapshot(
+                    self._device_id or "unknown",
+                    str(e),
+                    communication_status=communication_status,
+                )
             try:
                 self.on_sample(snap)
             except Exception:

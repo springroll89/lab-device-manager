@@ -16,6 +16,39 @@ def test_loads_devices(tmp_path):
     assert cfg.devices[0].name == "pump-1"
     assert cfg.devices[0].serial_port == "/dev/x"
 
+
+def test_loads_tcp_device_channel(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(textwrap.dedent("""
+        [[devices]]
+        name = "pump-1"
+        type = "tyd02"
+        transport = "tcp"
+        host = "192.168.1.125"
+        tcp_port = 4002
+    """), encoding="utf-8")
+
+    cfg = load_config(str(p))
+
+    assert cfg.devices[0].transport == "tcp"
+    assert cfg.devices[0].host == "192.168.1.125"
+    assert cfg.devices[0].tcp_port == 4002
+
+
+def test_rejects_tcp_device_without_endpoint(tmp_path):
+    import pytest
+
+    p = tmp_path / "c.toml"
+    p.write_text(textwrap.dedent("""
+        [[devices]]
+        name = "pump-1"
+        type = "tyd02"
+        transport = "tcp"
+    """), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="requires host and tcp_port"):
+        load_config(str(p))
+
 def test_defaults(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('db_path = "./x.db"\n', encoding="utf-8")  # no devices key -> no devices

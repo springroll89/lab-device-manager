@@ -1,7 +1,7 @@
 from __future__ import annotations
 import time
 from typing import Optional, Tuple
-from lab_device_manager.instruments.base import StatusSnapshot
+from lab_device_manager.instruments.base import StatusSnapshot, offline_snapshot
 
 # Fangrui rotary viscometer (上海方瑞, e.g. LVDV-1T) — custom binary UPLOAD protocol.
 # The device PUSHES data frames to the host (9600 8N1, assumed). NOT Modbus.
@@ -104,8 +104,11 @@ class ViscometerAdapter:
                 del self._buffer[:-MAX_BUFFER_BYTES]
         frame, remaining = extract_latest_frame(bytes(self._buffer))
         if frame is None:
-            return StatusSnapshot(timestamp=time.time(), state="offline",
-                                  work_mode="", device_id="Fangrui Viscometer")
+            return offline_snapshot(
+                "Fangrui Viscometer",
+                "no valid viscometer data frame",
+                communication_status="instrument_unresponsive",
+            )
         self._buffer = bytearray(remaining[-MAX_BUFFER_BYTES:])
         return self._to_snapshot(frame)
 
