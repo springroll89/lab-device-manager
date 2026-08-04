@@ -181,10 +181,8 @@ function renderRuns(runs) {
     tr.appendChild(cell(r.started_display));
     tr.appendChild(cell(fmtTs(r.ended_ms)));
     tr.appendChild(cell(fmtDur(r.duration_ms)));
-    const statusCls = "s-" + (r.end_status === "alarm_abort" ? "alarm" : (r.end_status === "completed" ? "running" : "stopped"));
-    tr.appendChild(cell(r.end_status, statusCls));
-    tr.appendChild(cell((r.actual_volume == null ? "-" : r.actual_volume) + " " + (r.actual_unit || "")));
-    tr.appendChild(cell((r.result_acc_volume == null ? "-" : r.result_acc_volume) + " " + (r.result_acc_unit || "")));
+    tr.appendChild(cell(PuricoreRunPresentation.statusLabel(r), PuricoreRunPresentation.statusClass(r)));
+    tr.appendChild(cell(PuricoreRunPresentation.formatMetric(r.primary_metric)));
     tr.appendChild(cell(r.operator));
     tr.appendChild(cell(r.project_tag));
     tb.appendChild(tr);
