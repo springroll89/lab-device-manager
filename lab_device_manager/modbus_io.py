@@ -113,6 +113,15 @@ class TcpTransport:
             except OSError:
                 pass
 
+    def reset_connection(self) -> None:
+        """Discard a connected-but-stale gateway session.
+
+        The next read or write reconnects lazily.  This is mainly useful for
+        passive instruments whose TCP socket can remain established after a
+        serial-server power cycle while no serial bytes are forwarded.
+        """
+        self._disconnect()
+
     def _ensure_connected(self):
         if self._closed:
             raise GatewayUnavailableError("TCP transport is closed")

@@ -91,3 +91,24 @@ def test_tcp_transport_treats_closed_channel_as_gateway_unavailable(
         transport.read_wait(0.1)
 
     assert sock.closed is True
+
+
+def test_tcp_transport_reset_connection_discards_stale_socket_and_reconnects(
+    monkeypatch,
+):
+    first = FakeSocket([b"old"])
+    second = FakeSocket([b"new"])
+    sockets = iter([first, second])
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *_args: next(sockets),
+    )
+    transport = TcpTransport("192.168.1.125", 4001)
+    transport.open()
+
+    assert transport.read_wait(0.1) == b"old"
+    transport.reset_connection()
+    assert first.closed is True
+
+    assert transport.read_wait(0.1) == b"new"

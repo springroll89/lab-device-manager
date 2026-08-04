@@ -93,10 +93,17 @@ def extract_latest_frame(buf: bytes) -> Tuple[Optional[bytes], bytes]:
 class ViscometerAdapter:
     """Read the Fangrui device's pushed stream and return its latest frame."""
 
-    def __init__(self, transport, read_timeout: float = 0.5):
+    def __init__(
+        self,
+        transport,
+        read_timeout: float = 0.5,
+        reconnect_after_misses: int = 3,
+    ):
         self.transport = transport
         self.read_timeout = read_timeout
+        self.reconnect_after_misses = max(1, int(reconnect_after_misses))
         self._buffer = bytearray()
+        self._missed_reads = 0
 
     def identity(self) -> str:
         return "Fangrui Viscometer"
@@ -105,20 +112,36 @@ class ViscometerAdapter:
         # Drain whatever bytes are currently buffered (short polls until a gap),
         # then return the LATEST complete frame so stale queued data is skipped.
         deadline = time.monotonic() + self.read_timeout
+        received_data = False
         while time.monotonic() < deadline:
             chunk = self.transport.read_wait(0.02)
             if not chunk:
-                break
+                if received_data:
+                    break
+                continue
+            received_data = True
             self._buffer.extend(chunk)
             if len(self._buffer) > MAX_BUFFER_BYTES:
                 del self._buffer[:-MAX_BUFFER_BYTES]
         frame, remaining = extract_latest_frame(bytes(self._buffer))
         if frame is None:
+            self._missed_reads += 1
+            if self._missed_reads >= self.reconnect_after_misses:
+                reset_connection = getattr(
+                    self.transport,
+                    "reset_connection",
+                    None,
+                )
+                if callable(reset_connection):
+                    reset_connection()
+                self._missed_reads = 0
+                self._buffer.clear()
             return offline_snapshot(
                 "Fangrui Viscometer",
                 "no valid viscometer data frame",
                 communication_status="instrument_unresponsive",
             )
+        self._missed_reads = 0
         self._buffer = bytearray(remaining[-MAX_BUFFER_BYTES:])
         return self._to_snapshot(frame)
 
