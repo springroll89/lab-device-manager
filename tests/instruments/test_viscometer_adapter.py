@@ -1,5 +1,6 @@
 from lab_device_manager.instruments.viscometer import (
     ViscometerAdapter,
+    checksum_sum256,
     HEADER,
     MAX_BUFFER_BYTES,
     TRAILER,
@@ -9,11 +10,12 @@ from lab_device_manager.instruments.viscometer import (
 def _frame(viscosity, temp, shear_rate, shear_stress, torque_pct):
     visc = int(round(viscosity * 100)).to_bytes(4, "big")
     t = int(round(temp * 10)).to_bytes(2, "big")
-    sr = int(round(shear_rate * 100)).to_bytes(4, "big")
-    ss = int(round(shear_stress * 10)).to_bytes(4, "big")
-    tq = int(round(torque_pct * 100)).to_bytes(2, "big")
-    return (HEADER + b"\x20" + visc + b"\x20" + t + b"\x20" + sr
-            + b"\x20" + ss + b"\x20" + tq + b"\x20" + bytes([0x00, TRAILER]))
+    sr = int(round(shear_rate * 1000)).to_bytes(4, "big")
+    ss = int(round(shear_stress * 1000 * 10)).to_bytes(4, "big")
+    tq = int(round(torque_pct * 10)).to_bytes(2, "big")
+    partial = (HEADER + b"\x20" + visc + b"\x20" + t + b"\x20" + sr
+               + b"\x20" + ss + b"\x20" + tq + b"\x20")
+    return partial + bytes([checksum_sum256(partial)]) + TRAILER
 
 
 class FakeTransport:
@@ -40,7 +42,11 @@ def test_read_status_returns_latest_frame():
     assert s.temp_c == 25.5
     assert s.metrics["viscosity_mPas"] == 250.5
     assert s.metrics["shear_rate_1s"] == 12.5
+    assert s.metrics["shear_stress_mPa"] == 33300.0
+    assert s.metrics["shear_stress_Pa"] == 33.3
     assert s.metrics["torque_pct"] == 50.0
+    assert s.metrics["data_verified"] is True
+    assert s.metrics["checksum_validated"] is True
 
 
 def test_read_status_offline_when_no_frame():

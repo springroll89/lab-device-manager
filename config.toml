@@ -30,7 +30,7 @@ modbus_addr = 1
 wordorder   = "CDAB"
 
 # ── 粘度计（方瑞，RS232，自定义二进制协议）──
-# 已接到 UT-6804 串口 1；抓到实机帧后继续确认校验和、扭矩换算和帧类型。
+# 已完成 USB-RS232 直连对照以及经 UT-6804/UT-6408 到 Mac 的全链路验证。
 [[devices]]
 name        = "viscometer-1"
 type        = "viscometer"
@@ -42,7 +42,7 @@ gateway_name = "UT-6804-01"
 gateway_model = "UT-6804"
 gateway_port = 1
 baudrate    = 9600
-parity      = "NONE"        # 8N1（粘度计假设）
+parity      = "NONE"        # 8N1（真机已确认）
 
 # ── 搅拌器（HMS-C，RS485）×5 ──
 # 搅拌器 1 已接到 UT-6804 串口 3；其余设备仍保留占位配置，接入后逐台改为对应 TCP 端口。
