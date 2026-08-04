@@ -229,6 +229,59 @@ def test_runs_and_tag(tmp_path):
     assert app.test_client().get("/api/runs/untagged").get_json() == []
 
 
+def test_viscometer_run_uses_device_identity_and_viscosity_metric(tmp_path):
+    repo = Repository(":memory:")
+    did = repo.upsert_device(
+        "viscometer-1", "viscometer", alias="粘度计"
+    )
+    snapshot = StatusSnapshot(
+        timestamp=time.time(),
+        state="running",
+        work_mode="viscosity",
+        device_id="Fangrui Viscometer",
+        temp_c=25.0,
+        metrics={"viscosity_mPas": 2.44, "torque_pct": 8.0},
+    )
+    engine = StaticEngine(
+        {did: snapshot},
+        {
+            did: DeviceConfig(
+                name="viscometer-1",
+                type="viscometer",
+                alias="粘度计",
+            )
+        },
+    )
+    app = create_app(engine, repo, secret_key="test-secret")
+    app.config.update(TESTING=True, AUTH_TEST_BYPASS=True)
+    rid = repo.open_run(did, 1, 1751000000_000, {"work_mode": "viscosity"})
+    repo.add_sample(
+        rid,
+        did,
+        1751000001_000,
+        "running",
+        None,
+        None,
+        25.0,
+        json.dumps({"viscosity_mPas": 2.44, "torque_pct": 8.0}),
+    )
+    repo.close_run(
+        rid, 1751000060_000, "interrupted_restart",
+        None, None, None, None, 0,
+    )
+
+    run = app.test_client().get("/api/runs").get_json()[0]
+
+    assert run["device_label"] == "粘度计（viscometer-1）"
+    assert run["device_type"] == "viscometer"
+    assert run["status_label"] == "系统重启中断"
+    assert run["primary_metric"] == {
+        "label": "粘度", "value": 2.44, "unit": "mPa·s"
+    }
+    assert run["actual_volume"] is None
+    assert run["result_acc_volume"] is None
+
+
 def test_tag_missing_run_returns_404(tmp_path):
     app, repo, did = _app(tmp_path)
     response = app.test_client().post(
@@ -245,7 +298,7 @@ def test_runs_csv_export(tmp_path):
     r = app.test_client().get("/api/runs/export.csv")
     assert r.status_code == 200
     assert "text/csv" in r.content_type
-    assert r.headers.get("Content-Disposition") == "attachment; filename=pump_runs.csv"
+    assert r.headers.get("Content-Disposition") == "attachment; filename=device_runs.csv"
     body = r.data.decode("utf-8")
     assert "end_status" in body and "completed" in body
 
@@ -452,7 +505,7 @@ def test_runs_export_xlsx(tmp_path):
     repo.close_run(rid, 1751000060_000, "completed", 12.5, "mL", 12.5, "mL", 0)
     r = app.test_client().get("/api/runs/export.xlsx")
     assert r.status_code == 200
-    assert r.headers.get("Content-Disposition") == "attachment; filename=pump_runs.xlsx"
+    assert r.headers.get("Content-Disposition") == "attachment; filename=device_runs.xlsx"
     wb = load_workbook(BytesIO(r.data))
     assert "runs" in wb.sheetnames and "samples" in wb.sheetnames
     ws = wb["runs"]
@@ -542,6 +595,21 @@ def test_run_page_serves_html(tmp_path):
     r = app.test_client().get(f"/run/{rid}")
     assert r.status_code == 200
     assert b"run.js" in r.data
+
+
+def test_run_pages_use_device_aware_run_presentation(tmp_path):
+    app, repo, did = _app(tmp_path)
+    client = app.test_client()
+
+    dashboard = client.get("/static/index.html").data.decode("utf-8")
+    detail = client.get("/static/run.html").data.decode("utf-8")
+    script = client.get("/static/run.js").data.decode("utf-8")
+
+    assert "主要数据" in dashboard
+    assert "run-presentation.js" in dashboard
+    assert 'id="chartTitle"' in detail
+    assert "粘度随时间变化" in script
+    assert "viscosity_mPas" in script
 
 
 def test_shared_premium_theme_is_served_by_every_operator_page(tmp_path):

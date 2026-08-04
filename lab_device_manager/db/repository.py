@@ -270,6 +270,44 @@ class Repository:
                 (run_id, limit)).fetchall()
         return [_row_to_sample(r) for r in rows]
 
+    def latest_sample_for_run(self, run_id: int) -> Optional[SampleRow]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM sample WHERE run_id=? ORDER BY ts_ms DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        return _row_to_sample(row) if row else None
+
+    def latest_samples_for_runs(
+        self, run_ids: list[int]
+    ) -> dict[int, SampleRow]:
+        latest: dict[int, SampleRow] = {}
+        unique_ids = list(dict.fromkeys(int(run_id) for run_id in run_ids))
+        for start in range(0, len(unique_ids), 500):
+            chunk = unique_ids[start:start + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            with self._lock:
+                rows = self._conn.execute(
+                    f"""SELECT s.* FROM sample s
+                        JOIN (
+                            SELECT run_id, MAX(ts_ms) AS max_ts
+                            FROM sample
+                            WHERE run_id IN ({placeholders})
+                            GROUP BY run_id
+                        ) latest
+                          ON latest.run_id=s.run_id
+                         AND latest.max_ts=s.ts_ms
+                        ORDER BY s.run_id, s.id DESC""",
+                    chunk,
+                ).fetchall()
+            for row in rows:
+                run_id = row["run_id"]
+                if run_id not in latest:
+                    latest[run_id] = _row_to_sample(row)
+        return latest
+
     def list_samples_for_device(self, device_id: int, limit: int = 100) -> list:
         with self._lock:
             rows = self._conn.execute(

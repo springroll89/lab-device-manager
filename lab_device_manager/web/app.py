@@ -69,6 +69,16 @@ from lab_device_manager.web.whd46 import create_whd46_blueprint
 
 _MAX_RUN_LIMIT = 1000
 
+_RUN_STATUS_LABELS = {
+    "completed": "正常完成",
+    "alarm_abort": "报警终止",
+    "manual_abort": "手动终止",
+    "interrupted_restart": "系统重启中断",
+    "interrupted_reconnect": "通讯重连中断",
+    "interrupted_shutdown": "系统关闭中断",
+    "comms_interrupted": "通讯中断",
+}
+
 
 def _label_request_args() -> tuple[list[int], int]:
     try:
@@ -192,11 +202,69 @@ def _topology_payload(
     }
 
 
-def _run_to_dict(run):
+def _device_label(config, device_id: int) -> str:
+    if config is None:
+        return f"设备 {device_id}"
+    alias = str(getattr(config, "alias", "") or "").strip()
+    name = str(getattr(config, "name", "") or "").strip()
+    if alias and name and alias != name:
+        return f"{alias}（{name}）"
+    return alias or name or f"设备 {device_id}"
+
+
+def _run_status_label(end_status) -> str:
+    if not end_status:
+        return "运行中"
+    return _RUN_STATUS_LABELS.get(end_status, str(end_status))
+
+
+def _sample_metrics(sample) -> dict:
+    if sample is None or not sample.metrics_json:
+        return {}
+    try:
+        return _json.loads(sample.metrics_json)
+    except Exception:
+        return {}
+
+
+def _primary_run_metric(run, device_type: str, sample=None) -> dict:
+    metrics = _sample_metrics(sample)
+    if device_type == "viscometer":
+        return {
+            "label": "粘度",
+            "value": metrics.get("viscosity_mPas"),
+            "unit": "mPa·s",
+        }
+    if device_type == "stirrer":
+        return {
+            "label": "实际温度",
+            "value": sample.temp_c if sample is not None else None,
+            "unit": "℃",
+        }
+    if device_type == "whd46":
+        return {
+            "label": "温度",
+            "value": sample.temp_c if sample is not None else None,
+            "unit": "℃",
+        }
+    return {
+        "label": "累计液量",
+        "value": run.result_acc_volume,
+        "unit": run.result_acc_unit or "",
+    }
+
+
+def _run_to_dict(run, config=None, latest_sample=None):
+    device_type = str(getattr(config, "type", "") or "")
     d = {
         "id": run.id, "device_id": run.device_id,
+        "device_name": str(getattr(config, "name", "") or ""),
+        "device_alias": str(getattr(config, "alias", "") or ""),
+        "device_type": device_type,
+        "device_label": _device_label(config, run.device_id),
         "started_ms": run.started_ms, "ended_ms": run.ended_ms,
         "duration_ms": run.duration_ms, "end_status": run.end_status,
+        "status_label": _run_status_label(run.end_status),
         "operator": run.operator,
         "operator_user_id": run.operator_user_id,
         "project_tag": run.project_tag,
@@ -211,6 +279,9 @@ def _run_to_dict(run):
         d["setpoints"] = _json.loads(run.setpoints_json) if run.setpoints_json else {}
     except Exception:
         d["setpoints"] = {}
+    d["primary_metric"] = _primary_run_metric(
+        run, device_type, latest_sample
+    )
     return d
 
 
@@ -251,8 +322,8 @@ def _xlsx_safe(v):
     return v
 
 
-def _build_pdf_report(run, samples, events):
-    """Build a single-run PDF report with metadata, flow curve, and event timeline."""
+def _build_pdf_report(run, samples, events, config=None):
+    """Build a device-aware single-run PDF report."""
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4)
     styles = getSampleStyleSheet()
@@ -260,14 +331,22 @@ def _build_pdf_report(run, samples, events):
     story.append(Paragraph(f"运行报告 #{run.id}", styles["Title"]))
     story.append(Spacer(1, 12))
 
+    device_type = str(getattr(config, "type", "") or "")
+    latest_sample = samples[-1] if samples else None
+    primary_metric = _primary_run_metric(run, device_type, latest_sample)
+    primary_value = primary_metric["value"]
+    primary_display = (
+        f"{primary_value} {primary_metric['unit']}"
+        if primary_value is not None else "-"
+    )
     meta = [
-        ["设备", str(run.device_id)],
+        ["设备", _device_label(config, run.device_id)],
         ["开始", fmt_ts_ms(run.started_ms) if run.started_ms else "-"],
         ["结束", fmt_ts_ms(run.ended_ms) if run.ended_ms else "-"],
-        ["状态", run.end_status or "-"],
+        ["状态", _run_status_label(run.end_status)],
         ["操作人", run.operator or "-"],
         ["项目", run.project_tag or "-"],
-        ["本次液量", f"{run.actual_volume} {run.actual_unit}" if run.actual_volume is not None else "-"],
+        [primary_metric["label"], primary_display],
     ]
     t = Table(meta, colWidths=[120, 360])
     t.setStyle(TableStyle([
@@ -278,11 +357,23 @@ def _build_pdf_report(run, samples, events):
     story.append(Spacer(1, 18))
 
     if samples:
-        story.append(Paragraph("流速曲线", styles["Heading2"]))
-        # Render a simple table of flow-rate values instead of a chart image.
-        flow_rows = [["时间", "流速"]]
-        for s in samples:
-            flow_rows.append([fmt_ts_ms(s.ts_ms), s.flow_rate if s.flow_rate is not None else "-"])
+        metric_title = "流速"
+        metric_unit = ""
+        metric_values = [s.flow_rate for s in samples]
+        if device_type == "viscometer":
+            metric_title = "粘度"
+            metric_unit = "mPa·s"
+            metric_values = [
+                _sample_metrics(s).get("viscosity_mPas") for s in samples
+            ]
+        elif device_type in ("stirrer", "whd46"):
+            metric_title = "温度"
+            metric_unit = "℃"
+            metric_values = [s.temp_c for s in samples]
+        story.append(Paragraph(f"{metric_title}随时间变化", styles["Heading2"]))
+        flow_rows = [["时间", f"{metric_title}（{metric_unit}）" if metric_unit else metric_title]]
+        for s, value in zip(samples, metric_values):
+            flow_rows.append([fmt_ts_ms(s.ts_ms), value if value is not None else "-"])
         flow_table = Table(flow_rows, colWidths=[240, 240])
         flow_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -2583,11 +2674,22 @@ def create_app(
             end_status=request.args.get("end_status"),
             tagged=_bool_or_none("tagged"),
         )
-        return jsonify([_run_to_dict(r) for r in runs])
+        dmap = engine.device_map()
+        latest_samples = repo.latest_samples_for_runs([r.id for r in runs])
+        return jsonify([
+            _run_to_dict(r, dmap.get(r.device_id), latest_samples.get(r.id))
+            for r in runs
+        ])
 
     @app.get("/api/runs/untagged")
     def api_untagged():
-        return jsonify([_run_to_dict(r) for r in repo.list_untagged_runs()])
+        dmap = engine.device_map()
+        runs = repo.list_untagged_runs()
+        latest_samples = repo.latest_samples_for_runs([r.id for r in runs])
+        return jsonify([
+            _run_to_dict(r, dmap.get(r.device_id), latest_samples.get(r.id))
+            for r in runs
+        ])
 
     @app.get("/api/runs/<int:run_id>")
     def api_run_detail(run_id):
@@ -2596,8 +2698,11 @@ def create_app(
             return jsonify({"error": "run not found"}), 404
         samples = repo.list_samples_for_run(run_id)
         events = repo.list_events_for_run(run_id)
+        dmap = engine.device_map()
         return jsonify({
-            "run": _run_to_dict(run),
+            "run": _run_to_dict(
+                run, dmap.get(run.device_id), samples[-1] if samples else None
+            ),
             "samples": [_sample_to_dict(s) for s in samples],
             "events": [_event_to_dict(e) for e in events],
         })
@@ -2617,25 +2722,40 @@ def create_app(
     @app.get("/api/runs/export.csv")
     def api_runs_export():
         runs = repo.list_runs(limit=100000)
+        dmap = engine.device_map()
+        latest_samples = repo.latest_samples_for_runs([r.id for r in runs])
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["id", "device_id", "started", "ended", "duration_s",
-                    "end_status", "operator", "project_tag", "experiment_tag",
+        w.writerow(["id", "device_id", "device_name", "device_type",
+                    "started", "ended", "duration_s",
+                    "end_status", "status_zh", "primary_metric",
+                    "primary_value", "primary_unit",
+                    "operator", "project_tag", "experiment_tag",
                     "remark", "result_acc_volume", "result_acc_unit",
                     "alarm_count", "tagged",
                     "actual_volume", "actual_unit",
                     "syringe_code", "target_volume", "inject_rate",
                     "pause_delay_ms", "repeat_count", "force"])
         for r in runs:
+            config = dmap.get(r.device_id)
+            primary = _primary_run_metric(
+                r, str(getattr(config, "type", "") or ""),
+                latest_samples.get(r.id),
+            )
             try:
                 sp = _json.loads(r.setpoints_json) if r.setpoints_json else {}
             except Exception:
                 sp = {}
-            row = [r.id, r.device_id,
+            row = [r.id, r.device_id, _device_label(config, r.device_id),
+                   str(getattr(config, "type", "") or ""),
                    fmt_ts_ms(r.started_ms) if r.started_ms else "",
                    fmt_ts_ms(r.ended_ms) if r.ended_ms else "",
                    (r.duration_ms / 1000) if r.duration_ms is not None else "",
-                   r.end_status or "", r.operator or "", r.project_tag or "",
+                   r.end_status or "", _run_status_label(r.end_status),
+                   primary["label"],
+                   primary["value"] if primary["value"] is not None else "",
+                   primary["unit"],
+                   r.operator or "", r.project_tag or "",
                    r.experiment_tag or "", r.remark or "",
                    r.result_acc_volume if r.result_acc_volume is not None else "",
                    r.result_acc_unit or "",
@@ -2651,7 +2771,7 @@ def create_app(
                    sp.get("force", "")]
             w.writerow([_csv_safe(c) for c in row])   # neutralize CSV formula injection
         return Response(buf.getvalue(), mimetype="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=pump_runs.csv"})
+                        headers={"Content-Disposition": "attachment; filename=device_runs.csv"})
 
     @app.get("/api/runs/export.xlsx")
     def api_runs_export_xlsx():
@@ -2692,28 +2812,43 @@ def create_app(
             tagged=_bool_or_none("tagged"),
         )
         wb = Workbook()
+        dmap = engine.device_map()
+        latest_samples = repo.latest_samples_for_runs([r.id for r in runs])
         ws_runs = wb.active
         ws_runs.title = "runs"
-        run_headers = ["id", "device_id", "started", "ended", "duration_s", "end_status",
+        run_headers = ["id", "device_id", "device_name", "device_type",
+                       "started", "ended", "duration_s", "end_status", "status_zh",
+                       "primary_metric", "primary_value", "primary_unit",
                        "operator", "project_tag", "experiment_tag", "remark",
                        "actual_volume", "actual_unit", "result_acc_volume", "result_acc_unit",
                        "alarm_count", "tagged", "work_mode", "target_volume"]
         ws_runs.append(run_headers)
-        sample_headers = ["run_id", "ts", "state", "flow_rate", "delivered_volume", "temp_c"]
+        sample_headers = ["run_id", "ts", "state", "flow_rate", "delivered_volume", "temp_c",
+                          "viscosity_mPas", "speed_rpm", "torque_pct", "shear_rate_1s"]
         ws_samples = wb.create_sheet(title="samples")
         ws_samples.append(sample_headers)
         for r in runs:
+            config = dmap.get(r.device_id)
+            latest_sample = latest_samples.get(r.id)
+            primary = _primary_run_metric(
+                r, str(getattr(config, "type", "") or ""), latest_sample
+            )
             sp = {}
             try:
                 sp = _json.loads(r.setpoints_json) if r.setpoints_json else {}
             except Exception:
                 pass
             ws_runs.append([_xlsx_safe(c) for c in [
-                r.id, r.device_id,
+                r.id, r.device_id, _device_label(config, r.device_id),
+                str(getattr(config, "type", "") or ""),
                 fmt_ts_ms(r.started_ms) if r.started_ms else "",
                 fmt_ts_ms(r.ended_ms) if r.ended_ms else "",
                 (r.duration_ms / 1000) if r.duration_ms is not None else "",
-                r.end_status or "", r.operator or "", r.project_tag or "",
+                r.end_status or "", _run_status_label(r.end_status),
+                primary["label"],
+                primary["value"] if primary["value"] is not None else "",
+                primary["unit"],
+                r.operator or "", r.project_tag or "",
                 r.experiment_tag or "", r.remark or "",
                 r.actual_volume if r.actual_volume is not None else "",
                 r.actual_unit or "",
@@ -2725,17 +2860,22 @@ def create_app(
                 r.target_volume if r.target_volume is not None else sp.get("target_volume", ""),
             ]])
             for s in repo.list_samples_for_run(r.id):
+                metrics = _sample_metrics(s)
                 ws_samples.append([_xlsx_safe(c) for c in [
                     s.run_id, fmt_ts_ms(s.ts_ms), s.state or "",
                     s.flow_rate if s.flow_rate is not None else "",
                     s.delivered_volume if s.delivered_volume is not None else "",
                     s.temp_c if s.temp_c is not None else "",
+                    metrics.get("viscosity_mPas", ""),
+                    metrics.get("speed", ""),
+                    metrics.get("torque_pct", ""),
+                    metrics.get("shear_rate_1s", ""),
                 ]])
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
         return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        headers={"Content-Disposition": "attachment; filename=pump_runs.xlsx"})
+                        headers={"Content-Disposition": "attachment; filename=device_runs.xlsx"})
 
     @app.get("/api/runs/<int:run_id>/report.pdf")
     def api_run_report_pdf(run_id):
@@ -2744,7 +2884,9 @@ def create_app(
             return jsonify({"error": "run not found"}), 404
         samples = repo.list_samples_for_run(run_id)
         events = repo.list_events_for_run(run_id)
-        pdf = _build_pdf_report(run, samples, events)
+        pdf = _build_pdf_report(
+            run, samples, events, engine.device_map().get(run.device_id)
+        )
         return Response(pdf, mimetype="application/pdf",
                         headers={"Content-Disposition": f"attachment; filename=run_{run_id}_report.pdf"})
 
@@ -2787,6 +2929,7 @@ def create_app(
         dc = dmap.get(device_id)
         # SECURITY: filter by device_id — never return another device's runs.
         runs = repo.list_runs_for_device(device_id, limit=20)
+        latest_samples = repo.latest_samples_for_runs([r.id for r in runs])
         snap_dict = _snap_to_dict(snap) if snap else None
         return jsonify({
             "device": {"id": device_id, "name": dc.name if dc else "", "alias": dc.alias if dc else "",
@@ -2794,7 +2937,10 @@ def create_app(
             "latest": snap_dict,
             "communication": communication_health(snap),
             "metrics": snap_dict["metrics"] if snap_dict else {},
-            "runs": [_run_to_dict(r) for r in runs],
+            "runs": [
+                _run_to_dict(r, dc, latest_samples.get(r.id))
+                for r in runs
+            ],
         })
 
     return app

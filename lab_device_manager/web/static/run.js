@@ -43,29 +43,49 @@ function renderMeta(run) {
   const grid = document.createElement("div"); grid.className = "kv";
   const dur = run.duration_ms == null ? "-" : (run.duration_ms >= 60000 ? (run.duration_ms/60000).toFixed(1)+" 分" : (run.duration_ms/1000).toFixed(0)+" 秒");
   grid.append(
-    kv("设备", run.device_id),
+    kv("设备", PuricoreRunPresentation.deviceLabel(run)),
     kv("开始", fmtTs(run.started_ms)),
     kv("结束", fmtTs(run.ended_ms)),
     kv("时长", dur),
-    kv("状态", run.end_status),
+    kv("状态", PuricoreRunPresentation.statusLabel(run)),
     kv("操作人", run.operator),
     kv("项目", run.project_tag),
     kv("实验", run.experiment_tag),
-    kv("本次液量", (run.actual_volume == null ? "-" : run.actual_volume) + " " + (run.actual_unit || "")),
-    kv("累计液量", (run.result_acc_volume == null ? "-" : run.result_acc_volume) + " " + (run.result_acc_unit || ""))
+    kv(run.primary_metric && run.primary_metric.label ? run.primary_metric.label : "主要数据",
+      run.primary_metric && run.primary_metric.value != null
+        ? `${run.primary_metric.value}${run.primary_metric.unit ? ` ${run.primary_metric.unit}` : ""}`
+        : "-")
   );
   card.append(title, grid); box.appendChild(card);
 }
 
-function renderChart(samples) {
+function chartSpec(deviceType) {
+  if (deviceType === "viscometer") {
+    return { title: "粘度随时间变化", label: "粘度（mPa·s）", value: (s) => s.metrics && s.metrics.viscosity_mPas };
+  }
+  if (deviceType === "stirrer") {
+    return { title: "温度随时间变化", label: "温度（℃）", value: (s) => s.temp_c };
+  }
+  if (deviceType === "whd46") {
+    return { title: "温度随时间变化", label: "温度（℃）", value: (s) => s.temp_c };
+  }
+  return { title: "流速随时间变化", label: "流速", value: (s) => s.flow_rate };
+}
+
+function renderChart(samples, deviceType) {
   const ctx = $("flowChart").getContext("2d");
   const colors = chartTheme();
   if (chartInstance) { chartInstance.destroy(); }
+  const spec = chartSpec(deviceType);
+  $("chartTitle").textContent = spec.title;
   const labels = samples.map((s) => fmtTs(s.ts_ms));
-  const data = samples.map((s) => s.flow_rate == null ? 0 : s.flow_rate);
+  const data = samples.map((s) => {
+    const value = spec.value(s);
+    return value == null ? null : value;
+  });
   chartInstance = new Chart(ctx, {
     type: "line",
-    data: { labels, datasets: [{ label: "流速", data, borderColor: colors.accent, tension: 0.2, pointRadius: 2 }] },
+    data: { labels, datasets: [{ label: spec.label, data, borderColor: colors.accent, tension: 0.2, pointRadius: 2, spanGaps: false }] },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
@@ -106,7 +126,7 @@ async function load() {
   if (data.error) { $("title").textContent = "运行不存在"; return; }
   $("title").textContent = "运行 #" + data.run.id;
   renderMeta(data.run);
-  renderChart(data.samples || []);
+  renderChart(data.samples || [], data.run.device_type);
   renderEvents(data.events || []);
 }
 
