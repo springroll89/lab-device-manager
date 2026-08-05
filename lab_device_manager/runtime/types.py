@@ -20,3 +20,28 @@ class DeviceConfig:
     modbus_addr: int = 1
     wordorder: str = "CDAB"
     channel: int = 1
+    auto_discovered: bool = False
+
+
+@dataclass(frozen=True)
+class GatewayDiscoveryConfig:
+    name: str
+    host: str
+    model: str = "UT-6804"
+    ports: tuple[int, ...] = (1, 2, 3, 4)
+    tcp_base_port: int = 4000
+
+
+@dataclass(frozen=True)
+class DiscoveryConfig:
+    enabled: bool = False
+    scan_interval_s: float = 5.0
+    forget_after_s: float = 15.0
+    local_serial: bool = False
+    probe_types: tuple[str, ...] = (
+        "viscometer",
+        "stirrer",
+        "tyd02",
+        "whd46",
+    )
+    gateways: tuple[GatewayDiscoveryConfig, ...] = ()

@@ -5,6 +5,7 @@ import webbrowser
 from lab_device_manager.config import load_config
 from lab_device_manager.db.repository import Repository
 from lab_device_manager.runtime.engine import Engine, device_adapter_factory
+from lab_device_manager.runtime.discovery import DiscoveryService
 from lab_device_manager.web.app import create_app
 
 
@@ -14,6 +15,8 @@ def main():  # pragma: no cover - wiring + server lifecycle
     eng = Engine(repo, list(cfg.devices), cfg.sample_interval_ms / 1000.0,
                  adapter_factory=device_adapter_factory)
     eng.start()
+    discovery = DiscoveryService(eng, cfg.discovery)
+    discovery.start()
     app = create_app(
         eng,
         repo,
@@ -45,6 +48,7 @@ def main():  # pragma: no cover - wiring + server lifecycle
             ssl_context=ssl_context,
         )
     finally:
+        discovery.stop()
         eng.stop()
         repo.close()
 

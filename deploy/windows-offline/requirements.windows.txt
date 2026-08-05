@@ -1,0 +1,9 @@
+flask>=3.0
+numpy>=2.0
+openpyxl>=3.1
+Pillow>=10
+pyserial>=3.5
+qrcode[pil]>=7.4
+reportlab>=4.0
+zxing-cpp>=3.1,<4
+colorama>=0.4.6

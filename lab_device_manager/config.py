@@ -5,7 +5,11 @@ import secrets
 import tomllib
 from dataclasses import dataclass
 from urllib.parse import urlparse
-from lab_device_manager.runtime.types import DeviceConfig
+from lab_device_manager.runtime.types import (
+    DeviceConfig,
+    DiscoveryConfig,
+    GatewayDiscoveryConfig,
+)
 
 
 def _load_or_create_secret(path: str = "./data/.session_secret") -> str:
@@ -39,6 +43,7 @@ class Config:
     topology_switch_name: str = "网络汇聚设备"
     topology_switch_model: str = ""
     devices: tuple = ()   # tuple[DeviceConfig]
+    discovery: DiscoveryConfig = DiscoveryConfig()
     secret_key: str = ""
 
 
@@ -64,6 +69,7 @@ def load_config(path: str | None = None) -> Config:
         connect_timeout_s=dev.get("connect_timeout_s", 0.5),
         parity=dev.get("parity", "EVEN"), modbus_addr=dev.get("modbus_addr", 1),
         wordorder=dev.get("wordorder", "CDAB"), channel=dev.get("channel", 1),
+        auto_discovered=bool(dev.get("auto_discovered", False)),
     ) for dev in d.get("devices", []))
     for dev in devs:
         if dev.transport not in {"serial", "tcp"}:
@@ -110,6 +116,76 @@ def load_config(path: str | None = None) -> Config:
     topology = d.get("topology") or {}
     if not isinstance(topology, dict):
         raise ValueError("config: topology must be a table")
+    discovery_raw = d.get("discovery") or {}
+    if not isinstance(discovery_raw, dict):
+        raise ValueError("config: discovery must be a table")
+    gateway_items = discovery_raw.get("gateways", [])
+    if not isinstance(gateway_items, list):
+        raise ValueError(
+            "config: use [[discovery.gateways]] for gateway discovery"
+        )
+    gateways = []
+    for item in gateway_items:
+        if not isinstance(item, dict):
+            raise ValueError("config: discovery gateway must be a table")
+        host = str(item.get("host", "")).strip()
+        name = str(item.get("name", "")).strip()
+        raw_ports = item.get("ports", [1, 2, 3, 4])
+        if not host or not name:
+            raise ValueError(
+                "config: discovery gateway requires name and host"
+            )
+        if (
+            not isinstance(raw_ports, list)
+            or not raw_ports
+            or any(
+                not isinstance(port, int) or not 1 <= port <= 4
+                for port in raw_ports
+            )
+        ):
+            raise ValueError(
+                "config: discovery gateway ports must contain 1..4"
+            )
+        base_port = item.get("tcp_base_port", 4000)
+        if not isinstance(base_port, int) or not 1 <= base_port <= 65531:
+            raise ValueError(
+                "config: discovery gateway tcp_base_port is invalid"
+            )
+        gateways.append(
+            GatewayDiscoveryConfig(
+                name=name,
+                host=host,
+                model=str(item.get("model", "UT-6804")).strip()
+                or "UT-6804",
+                ports=tuple(dict.fromkeys(raw_ports)),
+                tcp_base_port=base_port,
+            )
+        )
+    allowed_probe_types = {"viscometer", "stirrer", "tyd02", "whd46"}
+    raw_probe_types = discovery_raw.get(
+        "probe_types",
+        ["viscometer", "stirrer", "tyd02", "whd46"],
+    )
+    if (
+        not isinstance(raw_probe_types, list)
+        or not raw_probe_types
+        or any(item not in allowed_probe_types for item in raw_probe_types)
+    ):
+        raise ValueError("config: discovery probe_types contains unknown type")
+    scan_interval_s = discovery_raw.get("scan_interval_s", 5.0)
+    forget_after_s = discovery_raw.get("forget_after_s", 15.0)
+    if not isinstance(scan_interval_s, (int, float)) or scan_interval_s <= 0:
+        raise ValueError("config: discovery scan_interval_s must be positive")
+    if not isinstance(forget_after_s, (int, float)) or forget_after_s <= 0:
+        raise ValueError("config: discovery forget_after_s must be positive")
+    discovery = DiscoveryConfig(
+        enabled=bool(discovery_raw.get("enabled", False)),
+        scan_interval_s=float(scan_interval_s),
+        forget_after_s=float(forget_after_s),
+        local_serial=bool(discovery_raw.get("local_serial", False)),
+        probe_types=tuple(dict.fromkeys(raw_probe_types)),
+        gateways=tuple(gateways),
+    )
     return Config(
         db_path=d.get("db_path", "./data/lab_device_manager.db"),
         sample_interval_ms=sample_interval_ms,
@@ -129,5 +205,6 @@ def load_config(path: str | None = None) -> Config:
             topology.get("switch_model", "")
         ).strip(),
         devices=devs,
+        discovery=discovery,
         secret_key=secret_key,
     )

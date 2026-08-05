@@ -379,6 +379,14 @@ async function pollStatus() {
   box.textContent = "";
   const devices = d.devices || [];
   buildTopology(d.topology, devices);
+  if (!devices.length) {
+    box.appendChild(element(
+      "p",
+      "device-list-empty",
+      "暂无已连接设备。系统正在自动扫描，设备接入后会显示在这里。"
+    ));
+    return;
+  }
   for (const dev of devices) {
     const L = dev.latest || {};
     const M = L.metrics || {};
@@ -399,6 +407,16 @@ async function loadRuns() {
   try { runs = await dashboardJson("/api/runs?" + params.toString()); } catch (e) { return; }
   const tb = $("runs").querySelector("tbody");
   tb.textContent = "";
+  if (!runs.length) {
+    const row = document.createElement("tr");
+    const empty = document.createElement("td");
+    empty.colSpan = 9;
+    empty.className = "run-empty";
+    empty.textContent = "暂无运行记录";
+    row.appendChild(empty);
+    tb.appendChild(row);
+    return;
+  }
   for (const r of runs) {
     const tr = document.createElement("tr");
     tr.style.cursor = "pointer";

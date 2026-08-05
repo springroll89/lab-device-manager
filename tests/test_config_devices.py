@@ -1,4 +1,6 @@
 import textwrap
+from pathlib import Path
+
 from lab_device_manager.config import load_config
 
 def test_loads_devices(tmp_path):
@@ -139,3 +141,27 @@ def test_default_load_prefers_untracked_local_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert load_config().web_port == 7900
+
+
+def test_windows_lab_config_scans_all_gateway_ports():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "windows-offline"
+        / "config.windows.toml"
+    )
+
+    cfg = load_config(str(config_path))
+    gateways = {
+        gateway.host: gateway.ports
+        for gateway in cfg.discovery.gateways
+    }
+
+    assert cfg.devices == ()
+    assert cfg.discovery.enabled is True
+    assert cfg.discovery.local_serial is True
+    assert gateways == {
+        "192.168.1.125": (1, 2, 3, 4),
+        "192.168.1.126": (1, 2, 3, 4),
+        "192.168.1.127": (1, 2, 3, 4),
+    }

@@ -150,7 +150,7 @@ pip install -r requirements.txt
 ### 2 · 配置设备
 
 ```bash
-cp config.toml config.local.toml     # 复制默认配置，编辑实际端口与参数
+cp config.toml config.local.toml     # 复制默认配置，编辑现场网关地址
 ```
 
 <details>
@@ -166,20 +166,26 @@ tls_certfile       = "/path/to/lab-device.crt"               # 受平板信任�
 tls_keyfile        = "/path/to/lab-device.key"
 auto_open_browser  = true
 
-[[devices]]
-name        = "pump-1"
-type        = "tyd02"
-alias       = "注射泵"
-transport   = "tcp"
-host        = "192.168.1.125"       # UT-6804 地址
-tcp_port    = 4002                  # UT-6804 串口 2 的透明传输端口
-gateway_name  = "UT-6804-01"
-gateway_model = "UT-6804"
-gateway_port  = 2                   # 现场接入的物理串口编号
-baudrate    = 9600
-parity      = "EVEN"        # 8E1
-modbus_addr = 1
-wordorder   = "CDAB"
+[discovery]
+enabled          = true
+scan_interval_s  = 5
+forget_after_s   = 15
+local_serial     = true
+probe_types      = ["viscometer", "stirrer", "tyd02", "whd46"]
+
+[[discovery.gateways]]
+name          = "UT-6804-01"
+model         = "UT-6804"
+host          = "192.168.1.125"
+ports         = [1, 2, 3, 4]
+tcp_base_port = 4000
+
+[[discovery.gateways]]
+name          = "UT-6804-02"
+model         = "UT-6804"
+host          = "192.168.1.126"
+ports         = [1, 2, 3, 4]
+tcp_base_port = 4000
 
 [topology]
 collector_name = "后台 Mac 采集服务"
@@ -187,8 +193,9 @@ switch_name    = "实验室网络汇聚"
 switch_model   = "UT-6408"
 ```
 
-使用本机 USB / 串口直连时，将 `transport` 改为 `serial` 并配置
-`serial_port = "/dev/cu.usbserial-XXXXXX"`。同一 `host` 的 TCP 设备会在设备看板中自动归入同一个网关；`gateway_port` 只用于标明现场接线通道，不参与通信。
+系统会只读扫描已配置 UT-6804 的 1～4 号口，并自动枚举本机 USB / 串口；只有通过设备特征校验的仪器才会出现在设备看板。拔线或断电超过 15 秒后设备从当前列表隐藏，但历史运行和采样数据继续保留。
+
+> 第一阶段发现功能不会修改 UT-6804 的 RS232 / RS485、波特率、校验位等串口参数。仪器可以换到任意已经设置为匹配参数的端口；新端口仍需先在 UT-6804 管理页设置正确参数。
 
 > `secret_key` 首次运行时会自动生成并保存到 `data/.session_secret`，无需手动填写。
 
@@ -228,7 +235,7 @@ python -m lab_device_manager
 
 > 📌 R-201 第一版固定运行在 `parallel_validation`（纸电并行验证）模式。账号制提供唯一操作身份和审计，但**当前不等于**法规意义上的电子签名，正式放行仍以受控纸质签名为准。
 >
-> 📌 第一版按「一台设备一个串口」运行；HMS-C 五台共享同一 RS485 总线的多从机调度尚未启用。
+> 📌 当前按「一台设备一个串口」运行；系统会自动发现端口中的设备，但不会把多台 HMS-C 接在同一 RS485 总线上。若以后共用总线，必须先为每台 HMS-C 设置互不冲突的 Modbus 地址。
 
 ---
 
@@ -287,13 +294,13 @@ source .venv/bin/activate
 python -m pytest -v
 ```
 
-当前测试覆盖：设备解码、Modbus 帧、Repository、运行时引擎、Web API、认证流程、R-201 状态机、幂等事件、温度检查点、粘度终点、偏差闭环、四设备固定 fixture，以及库存事务、权限、法规目录、禁忌混存、双人确认、危废台账、导出、旧库迁移和实验用料联动。
+当前测试覆盖：设备解码、Modbus 帧、Repository、运行时引擎、设备动态发现与移除、Web API、认证流程、R-201 状态机、幂等事件、温度检查点、粘度终点、偏差闭环，以及库存事务、权限、法规目录、禁忌混存、双人确认、危废台账、导出、旧库迁移和实验用料联动。
 
 ### 添加新设备
 
 1. 在 `lab_device_manager/instruments/` 下实现 `BaseInstrumentAdapter` 子类。
 2. 在 `lab_device_manager/instruments/factory.py` 注册设备类型。
-3. 在 `config.toml` 中配置 `type` 与串口参数。
+3. 在 `config.toml` 的 `discovery.gateways` 中登记网关 IP；串口参数仍在 UT-6804 管理页设置。
 4. 添加对应单元测试。
 
 ---
@@ -315,6 +322,15 @@ python -m pytest -v
 
 <details>
 <summary><b>📂 点击展开历史更新记录</b></summary>
+
+### 2026-08-05 · 设备端口自动发现（第一阶段）
+
+- 三台 UT-6804 改为网关级配置，系统只读扫描每台网关的 1～4 号串口；不再要求把粘度计、注射泵或搅拌器永久固定在某个配置槽位。
+- 通过真实设备响应特征识别 LVDV-2T、HMS-C、TYD02 和 WHD46；只有识别成功的设备才显示，空端口和未连接的本机串口不再生成占位卡片。
+- 本机 USB / 串口同样自动枚举；设备断开后保留 15 秒容错窗口，随后从当前看板隐藏，数据库历史不删除。
+- 第一阶段坚持只读探测，不自动改写 UT-6804 的 RS232 / RS485、波特率或校验位；任意端口接入前仍需保证该端口参数与仪器匹配。自动配置网关参数和设备身份绑定留待第二阶段。
+- 修正 Windows Edge 中空运行表格的大面积留白，最近 30 条无数据时显示明确空状态；Chrome 与 Edge 均可正常使用。
+- 新增 Mac 数据导出包和 Windows 一键导入工具，可迁移库存、账号、实验与设备历史；导入前自动备份 PC 原数据库，且不覆盖 PC 会话密钥。
 
 ### 2026-08-04 · 设备运行记录按类型展示
 

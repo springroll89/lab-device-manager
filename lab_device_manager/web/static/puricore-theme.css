@@ -1159,6 +1159,64 @@ summary:focus-visible {
   font-size: 12px;
 }
 
+.page-dashboard .run-history {
+  width: min(calc(100% - clamp(36px, 6vw, 80px)), 1340px);
+  margin: 28px auto 48px;
+}
+
+.page-dashboard .run-history-heading h2 {
+  margin: 0;
+  font-size: clamp(20px, 2vw, 26px);
+}
+
+.page-dashboard .run-history-heading p {
+  margin: 6px 0 0;
+  color: var(--pc-muted);
+  font-size: 13px;
+}
+
+.page-dashboard .run-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 18px 0 12px;
+}
+
+.page-dashboard .run-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--pc-line-soft);
+  border-radius: var(--pc-radius);
+  background: var(--pc-surface);
+}
+
+.page-dashboard .run-table-wrap table {
+  width: 100%;
+  min-width: 940px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.page-dashboard #runs .run-empty {
+  height: 112px;
+  color: var(--pc-muted);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+.page-dashboard .device-list-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 44px 24px;
+  color: var(--pc-muted);
+  text-align: center;
+  border: 1px dashed var(--pc-line);
+  border-radius: var(--pc-radius);
+  background: var(--pc-surface);
+}
+
 .page-dashboard th,
 .page-dashboard td,
 .page-device th,
