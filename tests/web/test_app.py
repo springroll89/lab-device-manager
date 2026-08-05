@@ -164,6 +164,8 @@ def test_dashboard_exposes_topology_and_list_views(tmp_path):
     assert b"innerHTML" not in script
     assert b".topology-gateway" in theme
     assert b".topology-device" in theme
+    assert "暂无已连接设备".encode() in script
+    assert b"device-list-empty" in theme
 
 
 def test_all_pages_share_light_dark_theme_switch(tmp_path):

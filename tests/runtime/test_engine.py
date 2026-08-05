@@ -150,6 +150,39 @@ def test_engine_start_closes_run_left_open_by_previous_process():
     assert stale.end_status == "interrupted_restart"
 
 
+def test_engine_can_add_and_remove_discovered_device():
+    repo = Repository(":memory:")
+    engine = Engine(
+        repo,
+        [],
+        sample_interval_s=0.02,
+        adapter_factory=lambda _config: (
+            ScriptedAdapter([_snap("stopped")]),
+            lambda: None,
+        ),
+    )
+    engine.start()
+    config = DeviceConfig(
+        name="auto-stirrer-port-2",
+        type="stirrer",
+        alias="搅拌器",
+        transport="tcp",
+        host="192.168.1.127",
+        tcp_port=4002,
+        gateway_port=2,
+        auto_discovered=True,
+    )
+
+    device_id = engine.add_device(config)
+    assert engine.device_map()[device_id] == config
+    assert _wait_until(lambda: device_id in engine.latest())
+
+    assert engine.remove_device(device_id) is True
+    assert device_id not in engine.device_map()
+    assert device_id not in engine.latest()
+    engine.stop()
+
+
 def test_device_adapter_factory_uses_configured_tcp_channel(monkeypatch):
     events = []
 

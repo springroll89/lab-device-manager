@@ -87,24 +87,31 @@
       <div id="devices" class="cards"></div>
     </div>
   </section>
+  <section class="run-history" aria-labelledby="runHistoryTitle">
+    <div class="run-history-heading">
+      <h2 id="runHistoryTitle">运行记录（最近 30）</h2>
+      <p>设备实际运行后，记录会自动出现在这里。</p>
+    </div>
+    <div class="run-filters">
+      <input id="fProject" placeholder="项目">
+      <input id="fOperator" placeholder="操作人">
+      <select id="fStatus">
+        <option value="">全部状态</option>
+        <option value="completed">正常完成</option>
+        <option value="alarm_abort">报警终止</option>
+        <option value="manual_abort">手动终止</option>
+        <option value="interrupted_restart">系统重启中断</option>
+        <option value="comms_interrupted">通讯中断</option>
+      </select>
+      <button onclick="loadRuns()">筛选</button>
+      <button onclick="window.location='/api/runs/export.csv'">导出 CSV</button>
+      <button onclick="exportExcel()">导出 Excel</button>
+    </div>
+    <div class="run-table-wrap">
+      <table id="runs"><thead><tr><th>开始</th><th>结束</th><th>设备</th><th>时长</th><th>状态</th><th>主要数据</th><th>操作人</th><th>项目</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
 </main>
-<h2>运行记录（最近 30）</h2>
-<div style="padding:0 16px 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-  <input id="fProject" placeholder="项目">
-  <input id="fOperator" placeholder="操作人">
-  <select id="fStatus">
-    <option value="">全部状态</option>
-    <option value="completed">正常完成</option>
-    <option value="alarm_abort">报警终止</option>
-    <option value="manual_abort">手动终止</option>
-    <option value="interrupted_restart">系统重启中断</option>
-    <option value="comms_interrupted">通讯中断</option>
-  </select>
-  <button onclick="loadRuns()">筛选</button>
-  <button onclick="window.location='/api/runs/export.csv'">导出CSV</button>
-  <button onclick="exportExcel()">导出Excel</button>
-</div>
-<table id="runs"><thead><tr><th>开始</th><th>结束</th><th>设备</th><th>时长</th><th>状态</th><th>主要数据</th><th>操作人</th><th>项目</th><th></th></tr></thead><tbody></tbody></table>
 <script src="/static/primary-navigation.js"></script>
 <script src="/static/account-menu.js"></script>
 <script src="/static/run-presentation.js"></script>
